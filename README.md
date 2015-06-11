@@ -20,15 +20,15 @@ All the operations are done on browser for fast and server independent computing
 Language is still being developed. 
 
 
-Documentation 
+[Documentation](http://mathcortex.com/doc/doc.html)
 -
 
-http://mathcortex.com/doc/doc.html
+
 
 Examples
 -
 
-###linsolve
+###Linear system of equations
 ```javascript
 
 A = [5,-6, 1;

@@ -1,6 +1,6 @@
 Mathcortex Language  ![alt text](http://mathcortex.com/images/cortexicon.png)
 =
-MathCortex is a simple lightweight programming language that is designed for doing numerical calculation on **web browsers**. 
+MathCortex is a simple lightweight programming language that is designed for doing **numerical** calculation on **web browsers**. 
 
 
 Start using Mathcortex at http://mathcortex.com/. 
@@ -8,7 +8,7 @@ No installation or setup required.
 
 ###Main features are:
 - Easy matrix manipulation and built-in matrix operations
-- Sophisticated numerical computations like singular value decomposition(svd) and finding eigenvalues/vectors(eig)
+- Sophisticated numerical computations like singular value decomposition(**svd**) and finding eigenvalues/vectors(**eig**)
 - Implicit declarations
 - Syntax similar to C and JavaScript
 - Static typing, with full type inference
@@ -120,11 +120,11 @@ y = addition(55, 22);
 
 ```
 
-Load
+Integrate
 -
 
 You can integrate mathcortex to your site 
-```
+```html
 <!DOCTYPE html>
 <html>
 <head>

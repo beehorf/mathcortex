@@ -1,13 +1,29 @@
-// Virtual Machine for matrix language
-// Copyright (c) 2012-2015 Gorkem Gencay. All rights reserved.
-// 
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-// THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
+/* Virtual Machine for matrix language
+/* Copyright (c) 2012-2015 Gorkem Gencay. 
+ 
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+
+*/
 
 "use strict";
 
@@ -19,7 +35,7 @@ function asm_execute( onfinish)
 {
 	if (asm_async_preload)
 	{
-		imagePreload();
+		resourcePreload();
 		asm_end_func = onfinish;
 	}
 	else
@@ -47,9 +63,13 @@ function asm_execute_aux()
 	{	
 		asm_init();
 		
-		
 		//(new Function("var ticTime = new Date();" + compiled_js_test + ";alert(sp + '  ' + ((new Date())- ticTime))"))();
-		(new Function(cortexParser.getCompiledJS()))();
+		if(cortexParser.options["execute"] == "JS")
+			(new Function(cortexParser.getCompiledJS()))();				
+		else if(cortexParser.options["execute"] == "ASM")
+			(new Function(cortexParser.getCompiledASM()))();
+		else
+			throw "Invalid pragma option 'execute' : " + cortexParser.options["execute"];
 		
 		//(new Function(compiled_js))();  // this is actually : 'eval(compiled_js);' , alternative(which is also faster than raw eval) : eval.call(null, compiled_js);
 				

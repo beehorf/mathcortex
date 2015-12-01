@@ -1,3 +1,25 @@
+/*
+Copyright (c) 2012-2015 Gorkem Gencay. 
+
+This file is part of MathCortex compiler.
+
+
+MathCortex compiler is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+Foobar is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with Foobar.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+
+
 var test_results;
 var test_any_fail;
 var test_num;
@@ -260,6 +282,9 @@ function do_tests()
 					function g(x) {    return x+1;} \
 					d1 = g; d1 = f; d2 = g; d2 = h; d3 = d2; \
 					t = d1(1); y = d2([2,3]); z = d3("a"); t==1 && y==[4,5] && z == "a2"', true);
+					
+		test_exec(' clear all;function f(x,y,z){    return x+y+z; }  \
+					d2 = f; d1 = d2; d1("a" , "b", 1) == "ab1" && d1(2, 1 , 3) == 6;', true);
 		
 	}
 	

@@ -1,3 +1,30 @@
+/*
+Copyright (c) 2012-2015 Gorkem Gencay. 
+
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+
+*/
+
 "use strict";
 
 
@@ -7,9 +34,12 @@ cortex.ticTime = 0;
 var tableVar = {};
 var imageVar = new Array;
 
-var preload_images = []; // array of Image
-var preload_list = [];   // array of strings(image names)
-var preload_list_alias = []; // array of strings(image aliases)
+var Preloader = function(){};
+
+Preloader.images = []; // array of Image
+Preloader.image_src = [];   // array of strings(image names)
+Preloader.image_alias = []; // array of strings(image aliases)
+Preloader.import_src = [];
 
 var plotVar = new Array;
 
@@ -138,7 +168,7 @@ cortex.setrow = function(m, row, col_b, col_e, source)
 
 cortex.eig = function(M)
 {
-	if(M.length != M[0].length) Error_run('matrix must be square.');
+	if(M.length != M[0].length) cortex.error_run('matrix must be square.');
 	var r = numeric.eig(M);
 	var ret = new Array(4);
 	ret[0] = asm_util_array_to_column_matrix(r.lambda.x); 
@@ -195,7 +225,53 @@ cortex.randn = function()
 	return y1;
 }
 
-cortex.error_run = function()
+cortex.dot = function(M1, M2)
+{
+	if (M1[0].length != M2.length)
+	{
+		cortex.error_run('Matrix size mismatch.');
+	}
+	
+	return numeric.dot(M1,M2);
+}
+
+cortex.matrix_size_check = function(M1, M2)
+{
+	if (M1.length != M2.length || M1[0].length != M2[0].length)
+	{
+		cortex.error_run('Matrix size mismatch.');
+	}
+}
+
+cortex.elm_mul = function(M1, M2)
+{
+	cortex.matrix_size_check(M1,M2);
+	
+	return numeric.mul(M1,M2);
+}
+
+cortex.elm_div = function(M1, M2)
+{
+	cortex.matrix_size_check(M1,M2);
+	
+	return numeric.div(M1,M2);
+}
+
+cortex.add_mm = function(M1, M2)
+{
+	cortex.matrix_size_check(M1,M2);
+	
+	return numeric.add(M1,M2);
+}
+
+cortex.sub_mm = function(M1, M2)
+{
+	cortex.matrix_size_check(M1,M2);
+	
+	return numeric.sub(M1,M2);
+}
+
+cortex.error_run = function(s)
 {
 	throw new Error(s);
 }
@@ -336,7 +412,7 @@ function plotGetArray(mat)
 	{
 		if (mat[0].length != 1)
 		{
-			Error_run('Plot error. Matrix should be 1 by n or n by 1.');
+			cortex.error_run('Plot error. Matrix should be 1 by n or n by 1.');
 		}
 		else
 		{
@@ -368,7 +444,7 @@ function closeFigures(nameid)
 		}
 		else
 		{
-			Error_run("close : unrecognized command")
+			cortex.error_run("close : unrecognized command")
 		}
 	}
 	else if (typeof(nameid) == 'number')
@@ -379,7 +455,7 @@ function closeFigures(nameid)
 		}
 		else
 		{
-			Error_run("close : invalid figure handle")
+			cortex.Error_run("close : invalid figure handle")
 		}
 	}
 }
@@ -495,15 +571,16 @@ function updateImage(id, m1, m2, m3)
 	}
 }
 
-function imagePreload()
+
+function resourcePreload()
 {
-	preload_images = new Array();
-	for(var i = 0; i < preload_list.length; i++)
+	Preloader.images = new Array();
+	for(var i = 0; i < Preloader.image_src.length; i++)
 	{
 		var img = new Image;
 		img.done = false;
 
-		preload_images.push(img);
+		Preloader.images.push(img);
 
 		img.onload = function() {
 			var canvas = document.createElement("canvas");
@@ -519,9 +596,9 @@ function imagePreload()
 			console_print("Image loaded : " + this.src);
 
 			var flag = true;
-			for(var i = 0; i < preload_images.length; i++)
+			for(var i = 0; i < Preloader.images.length; i++)
 			{
-				if (preload_images[i].done == false)
+				if (Preloader.images[i].done == false)
 				{
 					flag = false;
 					break;
@@ -534,25 +611,25 @@ function imagePreload()
 			}
 		}
 
-		img.onerror = function() {
+		img.onerror = function(ev) {
 			console_print("Error: The image could not be loaded : " + this.src);
 		}
 	}
 
-	for(var i = 0; i < preload_list.length; i++)
+	for(var i = 0; i < Preloader.image_src.length; i++)
 	{
-		preload_images[i].src = "php/imread.php?pic=" + encodeURIComponent(preload_list[i]);
-		console_print("Image loading : " + preload_list[i]);
+		Preloader.images[i].src = "php/imread.php?pic=" + encodeURIComponent(Preloader.image_src[i]);
+		console_print("Image loading : " + Preloader.image_src[i]);
 	}
 }
 
 function imageRead(url)
 {
-	for(var i = 0; i < preload_list.length; i++)
+	for(var i = 0; i < Preloader.image_src.length; i++)
 	{
-		if (preload_list[i] == url || preload_list_alias[i] == url)
+		if (Preloader.image_src[i] == url || Preloader.image_alias[i] == url)
 		{
-			var img = preload_images[i];
+			var img = Preloader.images[i];
 
 			var width = img.width;
 			var height = img.height;
@@ -585,5 +662,5 @@ function imageRead(url)
 		}
 	}
 
-	Error_run("Image is not in preload list.");
+	cortex.error_run("Image is not in preload list.");
 }

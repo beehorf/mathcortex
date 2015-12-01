@@ -9,7 +9,8 @@
 
 <script>
   cortexParser.compile('M  = [2.655,  0.3959, 2.044;      0.9232, 3.959,  1.681;      2.488,  2.897,  1.076]; [u s d] = svd(M);');
-  cortexParser.executeJS();
+  cortexParser.execute();
+  
   alert( cortexParser.getGlobalScope().get_var_value('u') );
 </script>
 

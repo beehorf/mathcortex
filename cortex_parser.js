@@ -1,24 +1,44 @@
-// Parser for online matrix language
-// Copyright (c) 2012-2015 Gorkem Gencay. All rights reserved.
-// 
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-// THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
+/*
+Compiler for MathCortex language
+
+Copyright (c) 2012-2015 Gorkem Gencay. 
+
+MathCortex compiler is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+Foobar is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with Foobar.  If not, see <http://www.gnu.org/licenses/>.
+*/
 
 "use strict";
 
 (function( cortexParser, undefined ) {
 
-cortexParser.compile = function(code_inp)
+cortexParser.compile = function(code_inp, namespace)
+{
+	//ImportAsyncLoad(code_inp, namespace);
+	
+	if (namespace !== undefined)
+		cortexParser.namespace = namespace;
+	else
+		cortexParser.namespace = "global";
+		
+	return cortexParser.compile_aux(code_inp);
+}
+
+cortexParser.compile_aux = function(code_inp)
 {
 	try
 	{
 		Init(code_inp);
-	
+		
 		Program();
 		compiled_asm += '\n/// Functions ///\n\n' + functions_asm + ftable_function();
 		compiled_js_test +=  "\n" + export_global_scope() + '\n/// Functions ///\n\n' + functions_js_test + ftable_function(true);
@@ -29,8 +49,8 @@ cortexParser.compile = function(code_inp)
 		compiled_asm = "";
 		compiled_js_test = "";
 		
-		if(console_print)
-			console_print(err.message);
+		if(console_print_error)
+			console_print_error(err.message);
 		else	
 			throw(err);
 		
@@ -40,17 +60,22 @@ cortexParser.compile = function(code_inp)
 	return true;
 };
 
-cortexParser.executeJS = function()
+cortexParser.execute = function() // todo : merge with asm_execute_aux? fix preload
 {
 	try
 	{
-		(new Function(cortexParser.getCompiledJS()))();				
+		if(cortexParser.options["execute"] == "JS")
+			(new Function(cortexParser.getCompiledJS()))();				
+		else if(cortexParser.options["execute"] == "ASM")
+			(new Function(cortexParser.getCompiledASM()))();
+		else
+			throw "Invalid pragma option 'execute' : " + cortexParser.options["execute"];
 	}
    	catch(err)
 	{
 		if(!console_print_run_error)
 			throw err;
-		if ( err.message)
+		else if ( err.message)
 			console_print_run_error(err.message);
 		else
 			console_print_run_error(err);
@@ -61,6 +86,8 @@ cortexParser.executeJS = function()
 	return true;
 	
 };
+
+cortexParser.options = { "execute": "JS" };
 
 // Return last character position parsing. Used for error position
 cortexParser.getInpPos = function()
@@ -95,6 +122,7 @@ cortexParser.isLastExpressionReal = function()
 };
 
 cortexParser.clearAll = comp_clear_all;
+cortexParser.clearVar = comp_clear_var;
 cortexParser.functionList = [];
 
 var types = [ "reserved", 
@@ -107,7 +135,6 @@ var types = [ "reserved",
 			  "void" /* 7 */, 
 			  "struct" /*8*/ ];
 
-var preload_libs; 
 
 var Look;
 
@@ -143,18 +170,18 @@ var rvalue = new Array(); // close to move constructor concept
 var rvalue_pos = 0;
 
 var keywords = ["bool", "real", "matrix", "string", "function", "functionptr", "void", "else", "if", "clear", 
-				"function", "while", "loop0", "loop", "switch", "for", "do", "const", "enum", "class", "struct", "break", "continue", "default"];
+				"function", "while", "loop0", "loop", "switch", "for", "do", "const", "enum", "class", "struct", "break", "continue", "default", "pragma"];
 
 
 
 var linked_functions = [];
 
 var ast_root = new Array();
-
 var ast_postfix = new Array();
 
-
-
+var anim_count = 0;
+var func_uid;
+var func_gen_names;
 
 function AST(op, num_nodes, type, description){
 	this.nodes = new Array(num_nodes);
@@ -197,7 +224,7 @@ function ast_from_postfix()
 		}
 		
 		infinite++;
-		if(infinite>10000) 
+		if(infinite>100000) 
 			Error_parse("Internal error: infinite ast_from_postfix");
 	}
 	
@@ -208,8 +235,8 @@ function ast_from_postfix()
 
 function ast_generate_js(ast_node)
 {	
-	var op_func_map = { '+' : 'numeric.add', '*' : 'numeric.mul', '/' : 'numeric.div', '-' : 'numeric.sub', '==' : 'cortex.matrixsame', '!=' : '!cortex.matrixsame', '<=' : 'leq', '>=' : 'geq', '<' : 'le', '>' : 'ge', 
-					'.*' : 'numeric.mul', './' : 'numeric.div'};
+	var op_func_map = { '+' : 'numeric.add' , '*' : 'numeric.mul' , '/' : 'numeric.div', '-' : 'numeric.sub', '==' : 'cortex.matrixsame', '!=' : '!cortex.matrixsame', '<=' : 'leq', '>=' : 'geq', '<' : 'le', '>' : 'ge', 
+					'.*' : 'cortex.elm_mul', './' : 'cortex.elm_div'};
 	var type_func_map = { 2 : 'r', 3 : 'm', 4: 's'};
 	
 	var js_code = "";
@@ -296,12 +323,14 @@ function ast_generate_js(ast_node)
 			 (ast_node.nodes[0].type == 1 && ast_node.nodes[1].type == 1))
 			js_code = ast_generate_js(ast_node.nodes[1]) + ' ' +ast_node.op + ' ' +ast_generate_js(ast_node.nodes[0]);
 		else if (ast_node.nodes[0].type == 3 && ast_node.nodes[1].type == 3 && ast_node.op == '*') 
-			js_code = "numeric.dot(" + ast_generate_js(ast_node.nodes[1]) + ',' + ast_generate_js(ast_node.nodes[0]) + ")";
+			js_code = "cortex.dot(" + ast_generate_js(ast_node.nodes[1]) + ',' + ast_generate_js(ast_node.nodes[0]) + ")";
+		else if ( (ast_node.nodes[0].type == 3 && ast_node.nodes[1].type == 3) && (ast_node.op == '+' || ast_node.op == '-')) 
+			js_code = op_func_map[ast_node.op] + '(' + ast_generate_js(ast_node.nodes[1]) + ',' + ast_generate_js(ast_node.nodes[0]) + ")";
 		else
 		{
 			var func_s = op_func_map[ast_node.op];
 			var type_s = "";//"_" + type_func_map[ast_node.nodes[1].type] + "" + type_func_map[ast_node.nodes[0].type];
-			js_code = func_s + type_s + "(" + ast_generate_js(ast_node.nodes[1]) + ", " + ast_generate_js(ast_node.nodes[0]) + ")";
+			js_code += func_s + type_s + "(" + ast_generate_js(ast_node.nodes[1]) + ", " + ast_generate_js(ast_node.nodes[0]) + ")";
 		}
 	}
 	else if(ast_node.op == '$++' || ast_node.op == '$--')
@@ -356,13 +385,13 @@ function ast_var_defines(root_node)
 	return vs;
 }
 
-function ast_generate_code()
+function ast_generate_code(no_expression)
 {
 	var root_node = ast_from_postfix();
 				
 	var defs = ast_var_defines(root_node);
 		
-	if (cur_scope == undefined && root_node.op != '[,,]')
+	if (cur_scope == undefined && root_node.op != '[,,]' && !no_expression)
 		__ans_pos = compiled_js_test.length + defs.length;
 	
 	return defs + ast_generate_js(root_node);
@@ -373,12 +402,12 @@ Delegate.ftable_funcs = [];
 Delegate.map = [];
 Delegate.return_stack = [];
 
-Delegate.LastReturnStack = function LastReturnStack( )
+Delegate.LastReturnStack = function( )
 {
 	return this.return_stack[this.return_stack.length-1];
 }
 
-Delegate.Assign = function Assign( type, read_delegate, write_delegate)
+Delegate.Assign = function( type, read_delegate, write_delegate)
 {
 	if(type != 5 && type != 6)
 		return;
@@ -408,6 +437,47 @@ Delegate.Assign = function Assign( type, read_delegate, write_delegate)
 	}
 }
 
+Delegate.Ftable_suffix = function( param_types, param_count, return_types)
+{
+	var suffix = "";
+	for (var i = param_count-1; i>=0; i--)
+	{
+		suffix += "_" + param_types[i];
+	}
+	
+	return suffix + "$" + return_types.toString();
+}
+
+function GetLinkFunctionName(fname, param_types, param_count)
+{
+	var suffix = "";
+	for (var i = param_count-1; i>=0; i--)
+	{
+		suffix += "_" + param_types[i];
+	}
+	
+	return GetUniqueFName(fname , suffix);
+}
+
+function GetFtableFuncName(param_types, param_count, return_types)
+{	
+	return GetUniqueFName("", Delegate.Ftable_suffix(param_types, param_count, return_types) );
+}
+
+function GetUniqueFName(fname, param_suffix)
+{
+	var full_name = fname + param_suffix;
+	if ( func_gen_names[full_name] === undefined)
+	{
+		func_gen_names[ full_name ] = fname + "_" + func_uid;
+		func_uid++;
+	}
+	
+	return func_gen_names[ full_name ];
+}
+
+
+
 function get_lineof_current_position()
 {            
 	var start, end;
@@ -430,12 +500,8 @@ function get_lineof_current_position()
 
 function Error_parse(s)
 {
-	//alert(s);
 	throw new Error(s);
 }
-
-
-
 
 function GetChar()
 {
@@ -1482,17 +1548,6 @@ function SignedFactor()
 
 
 
-function GetLinkFunctionName(fname, param_types, param_count)
-{
-	var func_suffix = "";
-	for (var i = param_count-1; i>=0; i--)
-	{
-		func_suffix += param_types[i];
-	}
-	
-	return (fname + func_suffix).replace(".", "_");
-}
-
 function FuncCall(Name, IsCmd, IsDelegate)
 {
 	var count = 0;
@@ -1524,7 +1579,9 @@ function FuncCall(Name, IsCmd, IsDelegate)
 		while( Look != ';')
 		{
 			params_type[count] = 4;
-			Emitln('asm_reg0 = "' + GetName() + '"');
+			var param_name = GetName();
+			Emitln('asm_reg0 = "' + param_name + '"');
+			ast_postfix_push( '"' + param_name + '"', 4, 0);
 			PushLast(params_type[count]);
 			count++;
 		}
@@ -1554,7 +1611,7 @@ function FuncCall(Name, IsCmd, IsDelegate)
 	{
 		var is_global = cur_scope == undefined || cur_scope.get_var_type(Name) == undefined;
 		var full_name = is_global ? Name : cur_scope.name + "_" + Name;
-		var suffix = GetLinkFunctionName(Delegate.map[full_name][0], params_type, count).substring(Delegate.map[full_name][0].length) + '_' + return_types.toString();
+		var suffix = GetFtableFuncName( params_type, count, return_types );
 		EmitReadVar(Name, 6);
 		Emitln("asm_fjump_table_" + suffix + "(asm_reg0);//asm_call_reg0();");
 		
@@ -1576,7 +1633,7 @@ function LinkDelegation(Name, count, params_type, return_delegates, params_deleg
 	
 	Delegate.to_be_linked.push({ Name : full_name, count : count, param_types : params_type, return_delegates : return_delegates, params_delegate : params_delegate, return_types :return_types});
 	
-	var suffix = GetLinkFunctionName(Delegate.map[full_name][0], params_type, count).substring(Delegate.map[full_name][0].length) + '_' + return_types.toString();
+	var suffix = Delegate.Ftable_suffix( params_type, count, return_types );
 	
 	if(Delegate.ftable_funcs[suffix] == undefined)
 		Delegate.ftable_funcs[suffix] = [];
@@ -1598,11 +1655,9 @@ function LinkDelegateFunctions()
 		var return_types  = Delegate.to_be_linked[i].return_types;
 		var params_delegate = Delegate.to_be_linked[i].params_delegate;
 		
-		//return_types = LinkFunc(Delegate.map[full_name][0], count, params_type, return_delegates, params_delegate);
-		
 		for(var k = 1;k < Delegate.map[full_name].length;k++)
 		{
-			var suffix = GetLinkFunctionName(Delegate.map[full_name][k], params_type, count).substring(Delegate.map[full_name][k].length) + '_' + return_types.toString();
+			var suffix = Delegate.Ftable_suffix( params_type, count, return_types );
 			
 			var return_delegates_k = {};
 			var r_s = LinkFunc(Delegate.map[full_name][k], count, params_type, return_delegates_k , params_delegate);
@@ -1769,9 +1824,20 @@ function MatrixIndexer(Name)
 	return multiple;
 }
 
+function MemberAccess()
+{
+	
+}
+
 function Ident()
 {
 	var Name = GetName();
+	
+	while(Look == '.' && (LookAhead() != '*' && LookAhead() != '/'))
+	{
+		GetChar();
+		Name += '.' + GetName();
+	}
 
 	var type = comp_try_get_var_type(Name);
 	
@@ -2113,6 +2179,7 @@ function DoFunctionLink(func_name, code, params_count, params_type, return_deleg
 	var old_inp = inp;
 	var old_inp_pos = inp_pos;
 	var old_look = Look;
+	var param_description = "";
 	
 	inp = code;
 	inp_pos = 0;
@@ -2138,6 +2205,7 @@ function DoFunctionLink(func_name, code, params_count, params_type, return_deleg
 	   proto_param_names[proto_param_count] = GetName();
 	   
 	   test_def += proto_param_names[proto_param_count];
+	   param_description += types[ params_type[ proto_param_count] ] + " ";
 	   
 	   proto_param_count++;
 	   if (Look != ')')
@@ -2161,9 +2229,9 @@ function DoFunctionLink(func_name, code, params_count, params_type, return_deleg
 	compiled_js_test = "";
 	ast_postfix = new Array();
 	
-	Emitln_ast( test_def + ')\n{');
+	Emitln_ast( test_def + ')    // ' + param_description + '\n{');
 	
-	Emitln( 'function asm_func_' + func_name + '()');
+	Emitln( 'function asm_func_' + func_name + '()  // ' + param_description);
 	Emitln( '{');
 	
 	
@@ -2271,8 +2339,8 @@ function DoReturn(auto)
 	if (cur_scope.param_count_ref>0)
 		Emitln("asm_sp -= " + cur_scope.param_count_ref + ";");
 		
-	Emitln("return;");
-	Emitln_ast("return "+ ast_generate_code() + ";");
+	Emitln("return; // " + types[ rtype ]);
+	Emitln_ast("return "+ ast_generate_code(true) + "; //" + types[ rtype ]);
 	return rtype;	
 }
 
@@ -2283,7 +2351,7 @@ function DoIf()
 	Match('(');
 	var type = ExpressionNew();
 	
-	Emitln_ast("if (" + ast_generate_code() + "){");
+	Emitln_ast("if (" + ast_generate_code(true) + "){");
 	if (type==1)
 	{
 		Emitln("if ( asm_reg0_real )\n{" );
@@ -2333,7 +2401,7 @@ function DoFor()
 	{
 		ExpressionNew();
 		
-		ast_for_init = ast_generate_code();
+		ast_for_init = ast_generate_code(true);
 	}
 	Match(';');
 	
@@ -2343,7 +2411,7 @@ function DoFor()
 	{
 		var type_exp = ExpressionNew();
 		
-		ast_for_cond = ast_generate_code();
+		ast_for_cond = ast_generate_code(true);
 	}
 	Match(';');
 	
@@ -2354,7 +2422,7 @@ function DoFor()
 		var compiled_js_saved = compiled_asm;
 		compiled_asm = "";
 		ExpressionNew();
-		ast_for_next = ast_generate_code();
+		ast_for_next = ast_generate_code(true);
 		compiled_each = compiled_asm;
 		compiled_asm = compiled_js_saved;
 	}
@@ -2392,7 +2460,7 @@ function DoWhile()
 	Emitln("while(1) {");
 	var type = ExpressionNew();
 	
-	Emitln_ast("while (" + ast_generate_code() + "){");
+	Emitln_ast("while (" + ast_generate_code(true) + "){");
 	
 	if (type==1)
 	{
@@ -2430,7 +2498,7 @@ function DoLoop(is_zero_begin)
 		Match(',');			
 		var exp_type_begin = ExpressionNew();
 		
-		var begin_ast_js = ast_generate_code();
+		var begin_ast_js = ast_generate_code(true);
 		
 		comp_define_var(Name, exp_type_begin);
 		EmitWriteVar(Name, exp_type_begin);
@@ -2470,7 +2538,7 @@ function DoLoop(is_zero_begin)
 		Error_parse("Unsupported loop expression.");
 	}
 		
-	Emitln_ast("for(" + (isNameDefined ? "":"var ") + Name + "=" + (is_zero_begin ? "0" : begin_ast_js) + ";" + Name +"<" + ast_generate_code() + ";" + Name + "++) {");
+	Emitln_ast("for(" + (isNameDefined ? "":"var ") + Name + "=" + (is_zero_begin ? "0" : begin_ast_js) + ";" + Name +"<" + ast_generate_code(true) + ";" + Name + "++) {");
 	
 	var scope = get_scope();
 	scope.for_while_track.push(1);
@@ -2491,6 +2559,21 @@ function DoLoop(is_zero_begin)
 	
 	Emitln("}\n");
 	Emitln_ast("}\n");
+}
+
+function DoPragma()
+{
+	var name = GetName();
+	if(Look == ';')
+		console_print(cortexParser.options[name]);
+	else
+	{
+		var val = GetName();
+		cortexParser.options[name] = val;
+	}
+	
+	Match(';');
+	
 }
 
 function EmitReadVar(name, type)
@@ -2626,7 +2709,6 @@ function AssignmentOp(Name, IsIndexed, IndexMultiple)
 				}
 			}
 		}
-		type = 2;
 	}
 	else
 	{
@@ -2822,7 +2904,7 @@ function Statement()
 	else if (Look == '[')
 	{
 		var type = MultiAssignment();
-		Emitln_ast( ast_generate_code() + ";");
+		Emitln_ast( ast_generate_code(true) + ";");
 		return type;
 	}
 	else if (Look == '{')
@@ -2849,6 +2931,11 @@ function Statement()
 	{
 		GetName();
 		DoLoop(false);
+	}
+	else if (CheckAhead("pragma"))
+	{
+		GetName();
+		DoPragma();
 	}
 	else if (CheckAhead("break"))
 	{
@@ -2913,7 +3000,7 @@ function Preload()
 {
 	asm_async_preload = false;
 	
-	if (CheckAhead("preload"))
+	if(CheckAhead("preload"))
 	{
 		GetName();
 		Match('{');
@@ -2922,15 +3009,19 @@ function Preload()
 		{
 			asm_async_preload = true;
 			Match('"');
-			preload_list.push( GetString() );
+			Preloader.image_src.push( GetString() );
 			Match('"');
 			
 			if (CheckAhead("as"))
 			{
 				GetName();
 				Match('"');
-				preload_list_alias.push( GetString() );
+				Preloader.image_alias.push( GetString() );
 				Match('"');
+			}
+			else
+			{
+				Preloader.image_alias.push( "__" );
 			}
 			
 			if (Look == "}")
@@ -2943,8 +3034,93 @@ function Preload()
 	}
 }
 
+var modules = {};
+
+function ImportAsyncLoad(code_inp)
+{
+	end_of_prog = false;
+	inp = code_inp;
+	inp_pos = 0;
+	GetChar();
+	SkipWhite();
+	
+	var files = [];
+	
+	while (CheckAhead("import"))
+	{
+		GetName();
+		Match('"');
+		var src = GetString();
+		Match('"');
+		
+		files.push(src);
+	}
+	
+	for(var i = 0; i < files.length; i++)
+		files[i].loaded = false;
+	
+	var count = 0;
+	var data_loaded = {};
+	for(var i = 0; i < files.length; i++)
+	{
+		var file_url = "compiler/lib/" + files[i] + ".crx";
+		var request = $.get(file_url, '', 'text');
+		
+		request.done(function(data){
+			count++;
+			data_loaded[this.url] = data;
+			if(count == files.length)
+			{
+				for(var i = 0; i < files.length; i++)
+				{
+					console_print(" --- " + files[i] + ' --- \r\n' + data_loaded[file_url] + '\r\n');
+					ImportAsyncLoad(data_loaded[file_url]);
+				}
+					
+				/*cortexParser.compile_aux(code_inp);*/
+				console_print("import load done");
+			}
+		});
+		
+		request.fail(function(data){
+			alert(data);
+		});
+	/*
+		var count = 0;
+		$.get(files[i], '', 'text')
+		.done(function(data){
+			
+			alert(i);
+			count++;
+			if(count == files.length)
+			{
+				/*for(var i = 0; i < files.length; i++)
+					ImportAsyncLoad(data);* /
+			}
+		})
+		.fail(function(data){
+			alert(data);
+		});*/
+		
+	}
+	
+	//cortexParser.compile_aux(code_inp);
+}
+
+function Import()
+{
+	while(CheckAhead("import"))
+	{
+		GetName();
+		Match('"');
+		GetString();
+		Match('"');
+	}
+}
+
 function Program()
 {
+	Import();
 	Preload();
 	
 	while(!end_of_prog)
@@ -2980,6 +3156,11 @@ function Program()
 	if (__ans_pos >= 0)
 		compiled_js_test = compiled_js_test.slice(0, __ans_pos) + "__ans = " + compiled_js_test.slice(__ans_pos);
 	
+	if (comp_type_is_real(last_expression_type))
+		compiled_asm += "\n__ans = asm_reg0_real;"
+	else
+		compiled_asm += "\n__ans = asm_reg0;"
+	
 	LinkDelegateFunctions();
 }
 
@@ -2990,14 +3171,15 @@ function ftable_function(ast)
 	
 	for (var type in Delegate.ftable_funcs)
 	{	
-		var s = "\nfunction asm_fjump_table_"+ type + "(fname){\n  switch(fname)\n  {\n";
+		if (!Delegate.ftable_funcs.hasOwnProperty(type))
+		    continue;
+		var type_suffix = type.split("$")[0];
+		var s = "\nfunction asm_fjump_table_"+ func_gen_names[ type ] + "(fname){\n  switch(fname)\n  {\n";
 		
 		var i = 0;
 		for (var n in Delegate.ftable_funcs[type])
-		//for(var i=0;i < ftable_funcs.length; i++)
 		{
-			var type_suffix = type.split("_")[0];
-			s += "  case " + Delegate.ftable_funcs[type][n] + " : " + (ast ? "return " : "") + "asm_func_" + n + type_suffix + (ast ? "" : "()") + "; break;\n";
+			s += "  case " + Delegate.ftable_funcs[type][n] + " : " + (ast ? "return " : "") + "asm_func_" + func_gen_names[n + type_suffix] + (ast ? "" : "()") + "; break;\n";
 			i++;
 		}
 		
@@ -3241,7 +3423,7 @@ function ErrorInvalidFunctionParam(name, args)
 	Error_parse('Unexpected Assertion.');
 }
 
-var anim_count = 0;
+
 
 function StandartFunctions(Name, func_name, params_count, params_type, params_delegate)
 {
@@ -3403,14 +3585,7 @@ function LinkFunc(Name, params_count, params_type, return_delegates, params_dele
 {		
 	var return_types;	
 
-	var func_suffix = "";
-	for (var i = params_count-1; i>=0; i--)
-	{
-		func_suffix += params_type[i];
-	}
-	
-	var func_name = Name + func_suffix;
-	func_name = func_name.replace(".", "_");
+	var func_name = GetLinkFunctionName(Name, params_type, params_count);
 	
 	if(linked_functions[func_name] == undefined)
 	{
@@ -3427,7 +3602,7 @@ function LinkFunc(Name, params_count, params_type, return_delegates, params_dele
 			var report_pos_old = report_pos;
 			report_pos = user_func_codes_pos[Name];
 			
-			 var link_result = DoFunctionLink(func_name, user_func_codes[Name], params_count, params_type, return_delegates, params_delegate);
+			var link_result = DoFunctionLink(func_name, user_func_codes[Name], params_count, params_type, return_delegates, params_delegate);
 			return_types = link_result[0];
 			report_pos = report_pos_old;
 			
@@ -3609,6 +3784,8 @@ function export_global_scope()
 	return code + "\n";
 }
 
+
+
 function Init(code_exe)
 {
 	linked_functions = [];
@@ -3638,12 +3815,17 @@ function Init(code_exe)
 	report_pos = 0;
 	function_list.length = function_list_lib_size;
 	
+	func_uid = 0;
+	func_gen_names = [];
+	
 	cur_scope = undefined;
 	scope_stack = new Array();
 	
-	preload_list = new Array();
-	preload_list_alias = new Array();
+	Preloader.image_src = new Array();
+	Preloader.image_alias = new Array();
+	Preloader.import_src = new Array();
 	
+	modules = {};
 	
 	define_language_consts();
 	

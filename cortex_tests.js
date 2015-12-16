@@ -1,7 +1,7 @@
 /*
 Copyright (c) 2012-2015 Gorkem Gencay. 
 
-This file is part of MathCortex compiler.
+This file is part of MathCortex Compiler.
 
 
 MathCortex Compiler is free software: you can redistribute it and/or modify

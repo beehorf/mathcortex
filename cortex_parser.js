@@ -3,18 +3,18 @@ Compiler for MathCortex language
 
 Copyright (c) 2012-2015 Gorkem Gencay. 
 
-MathCortex compiler is free software: you can redistribute it and/or modify
+MathCortex Compiler is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
 
-Foobar is distributed in the hope that it will be useful,
+MathCortex Compiler is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
 MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License
-along with Foobar.  If not, see <http://www.gnu.org/licenses/>.
+along with MathCortex Compiler. If not, see <http://www.gnu.org/licenses/>.
 */
 
 "use strict";
@@ -170,7 +170,8 @@ var rvalue = new Array(); // close to move constructor concept
 var rvalue_pos = 0;
 
 var keywords = ["bool", "real", "matrix", "string", "function", "functionptr", "void", "else", "if", "clear", 
-				"function", "while", "loop0", "loop", "switch", "for", "do", "const", "enum", "class", "struct", "break", "continue", "default", "pragma"];
+				"function", "while", "loop0", "loop", "switch", "for", "do", "const", "enum", "class", "struct", "break", 
+				"continue", "default", "pragma", "preload", "import", "namespace", "as", "return"];
 
 
 
@@ -264,6 +265,7 @@ function ast_generate_js(ast_node)
 	}	
 	else if(ast_node.op == '[,,]') //multiassign
 	{
+		ast_node.nodes[0].opts.multireturn = false; // we override this, because we will handle
 		js_code = 'var __temp = ' + ast_generate_js(ast_node.nodes[0]) + ';\n';
 		for(var i=0;i< ast_node.opts.names.length; i++)
 		{
@@ -285,6 +287,9 @@ function ast_generate_js(ast_node)
 			js_code += ast_generate_js(ast_node.nodes[i]) + ((i!=0) ? ', ' : '');
 		}
 		js_code += ')';
+		
+		if (ast_node.opts.multireturn === true)
+			js_code += '[0]'; // multi return functions returns array of variables, we will take the first if no one handles explicitly ( fix for a = svd(..) or svd(..) )
 	}
 	else if(ast_node.op == '[]=')
 	{
@@ -375,14 +380,15 @@ function ast_collect_vars(ast_node, vars)
 
 function ast_var_defines(root_node)
 {
-	var v = [], vs = "";
+	var v = [], defstr = "";
 	ast_collect_vars(root_node, v);
-	for(var i=0; i< v.length; i++)
-		vs += (i==0 ? 'var ' : ', ') + v[i];
-	if (v.length>0)
-		vs += ';\n';
+	for(var i=0; i<  v.length; i++)
+		defstr += (i==0 ? 'var ' : ', ') + v[i];
 		
-	return vs;
+	if (v.length > 0)
+		defstr += ';\n';
+		
+	return defstr;
 }
 
 function ast_generate_code(no_expression)
@@ -1619,6 +1625,8 @@ function FuncCall(Name, IsCmd, IsDelegate)
 		ast_node.opts.fname = "asm_fjump_table_" + suffix + "("+ Name + ")";
 	}
 	
+	ast_node.opts.multireturn = return_types.length > 1;
+	
 	//Delegate.return_stack = "";
 
 	return return_types;
@@ -2443,7 +2451,7 @@ function DoFor()
 	var scope = get_scope();
 	scope.for_while_track.push(1);
 	
-	Emitln_ast("for(" + ast_for_init + "; " + ast_for_cond + "; " + ast_for_next + ") {");
+	Emitln_ast(ast_for_init + "; // for init\nfor( ; " + ast_for_cond + "; " + ast_for_next + ") {");
 	
 	Match(')');
 	Statement();

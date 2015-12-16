@@ -4,18 +4,18 @@ Copyright (c) 2012-2015 Gorkem Gencay.
 This file is part of MathCortex compiler.
 
 
-MathCortex compiler is free software: you can redistribute it and/or modify
+MathCortex Compiler is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
 
-Foobar is distributed in the hope that it will be useful,
+MathCortex Compiler is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
 MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License
-along with Foobar.  If not, see <http://www.gnu.org/licenses/>.
+along with MathCortex Compiler.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 
@@ -185,6 +185,9 @@ function do_tests()
 		test_exec_mat( "t=inv([0.1]);t", [ [10] ] );
 		test_exec_mat( "clear all;[a, b, c] = svd( [1,3; 5 6]); +a*diag(b)*trans(c)", [ [1,3],[5,6] ] );
 		test_exec_mat( "clear all;[a, b, c] = svd( [1,3, -2; 0 5 6; 1 5, -4;-1,8,3]); a*diag(b)*trans(c)", [ [1,3,-2],[0, 5,6],[1, 5, -4],[-1,8,3] ] );
+		test_exec_mat( "clear all;[a, b] = svd( [1,3, -2; 0 5 6; 1 5, -4;-1,8,3]); +b", [[ 11.593030118497285 , 7.417787806349491 , 1.2562152409469995 ]] );
+		test_exec_mat( "clear all;a = svd( [1,3, -2; 0 5 6; -1,8,3]); +a", [[ 0.12867772093485483 , -0.7554318418819771 , -0.6424677240187361 ], [ 0.6536403442539838 , 0.551818826655294 , -0.5179288396221128 ], [ 0.7457857229114442 , -0.3532969216106729 , 0.5647875181711056 ]]);
+		test_exec_mat( "clear all;svd( [1,3, -2; 0 5 6; -1,8,3]);", [[ 0.12867772093485483 , -0.7554318418819771 , -0.6424677240187361 ], [ 0.6536403442539838 , 0.551818826655294 , -0.5179288396221128 ], [ 0.7457857229114442 , -0.3532969216106729 , 0.5647875181711056 ]]);
 		test_exec_mat( "M = [2.276789346244186, 0.36876537348143756, 0.45080351759679615, 0.34839300904423, 2.226159736281261; 0.42500006267800927, 2.0114856229629368, 1.307754920097068, 1.9121849241200835, 1.9878224346321076; 0.5171949409414083, 1.4852598016150296, 0.5614477365743369, 1.493025004165247, 1.6660545710474253; 0.43050497816875577, 2.8250119413714856, 2.7469056753907353, 0.06255048047751188, 0.19471221417188644; 1.2185607792343944, 1.4983534910716116, 1.0756771531887352, 0.924582748208195, 0.6864324007183313];\
 		[l v] = eig(M);v1 = [v[0,0], v[1,0], v[2,0], v[3,0], v[4,0]];l1 = l[0,0];+M*trans(v1) - l1*trans(v1);", [ [0],[0 ],[0 ],[0 ],[0 ]] );
 		test_exec_mat( "M = 0.1*[5, -6 1; 2 , 4 0; 0,5, 6]; b = [-1; 2; 3];x = linsolve(M,b); +M*x-b;", [ [0], [0], [0] ]);
@@ -275,7 +278,7 @@ function do_tests()
 		
 		
 		test_exec("i =3;if(floor(i/2) != i/2) i++;i", 4);
-		test_exec("s=0;for(i=0;i<10;++i)  s = s+i;s", 45);
+		test_exec("clear all;s=0;for(i=0;i<10;++i)  s = s+i;s", 45);
 		
 		test_exec(' clear all;function f(x) {    return x; } \
 					function h(x) {    return x+2;} \

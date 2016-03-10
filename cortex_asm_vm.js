@@ -27,74 +27,11 @@ THE SOFTWARE.
 
 "use strict";
 
-var asm_end_func, asm_async_preload = false;
-
-//if preloading it is an async function that will wait loading images than will call asm_end_func
-//image loading in browsers cant be synchronous
-function asm_execute( onfinish)
-{
-	if (asm_async_preload)
-	{
-		resourcePreload();
-		asm_end_func = onfinish;
-	}
-	else
-	{
-		var result = asm_execute_aux();
-	
-		if (onfinish)
-			onfinish(result);
-			
-		return result;
-	}
-}
-
-function asm_preload_finish()
-{
-	asm_execute_aux();
-	
-	if (asm_end_func)
-		asm_end_func();
-}
-
-function asm_execute_aux()
-{
-	try
-	{	
-		asm_init();
-		
-		//(new Function("var ticTime = new Date();" + compiled_js_test + ";alert(sp + '  ' + ((new Date())- ticTime))"))();
-		if(cortexParser.options["execute"] == "JS")
-			(new Function(cortexParser.getCompiledJS()))();				
-		else if(cortexParser.options["execute"] == "ASM")
-			(new Function(cortexParser.getCompiledASM()))();
-		else
-			throw "Invalid pragma option 'execute' : " + cortexParser.options["execute"];
-		
-		//(new Function(compiled_js))();  // this is actually : 'eval(compiled_js);' , alternative(which is also faster than raw eval) : eval.call(null, compiled_js);
-				
-		if (asm_sp != 0 && console_print)
-			console_print("Warning: stack not cleared properly : " + asm_sp + "  " + asm_sp);
-	}
-   	catch(err)
-	{
-		if(!console_print_run_error)
-			throw err;
-		if ( err.message)
-			console_print_run_error(err.message);
-		else
-			console_print_run_error(err);
-			
-		return false;
-	}
-	
-	return true;
-}
 
 
-////////////// stack 
-var stack = new Array(1000);
-var heap = new Array(1000); // store for global variables 
+////////////// asm_stack 
+var asm_stack = new Array(1000);
+var asm_heap;
 
 var asm_sp = 0;      // stack pointer(sp)
 
@@ -108,13 +45,15 @@ var asm_reg1_real = 0;
 var asm_bp = 0;
 var __ans;
 
-function asm_init()
+function asm_init(heap)
 {
 	__ans = undefined;
 	asm_sp = 0;
 	asm_bp = 0;
 	
 	asm_reg0 = undefined;
+	
+	asm_heap = heap;
 }
 
 function asm_reg0_set(val)
@@ -124,54 +63,54 @@ function asm_reg0_set(val)
 
 function asm_push()
 {
-    stack[asm_sp++] = asm_reg0;
+    asm_stack[asm_sp++] = asm_reg0;
 }
 
 function asm_pop()
 {
-    asm_reg0 = stack[--asm_sp];
+    asm_reg0 = asm_stack[--asm_sp];
 }
 
 function asm_pop1()
 {
-    asm_reg1 = stack[--asm_sp];
+    asm_reg1 = asm_stack[--asm_sp];
 }
 
 
 function asm_pop1_real()
 {
-    asm_reg1_real = stack[--asm_sp];
+    asm_reg1_real = asm_stack[--asm_sp];
 }
 
 function asm_push_real()
 {
-    stack[asm_sp++] = asm_reg0_real;
+    asm_stack[asm_sp++] = asm_reg0_real;
 }
 
 function asm_pop_real()
 {
-    asm_reg0_real = stack[--asm_sp];
+    asm_reg0_real = asm_stack[--asm_sp];
 }
 
 
 function asm_reg0_stack_read(rel_pos)
 {
-	asm_reg0 = stack[asm_bp + rel_pos];
+	asm_reg0 = asm_stack[asm_bp + rel_pos];
 }
 
 function asm_reg0_stack_write(rel_pos)
 {
-	stack[asm_bp + rel_pos] = asm_reg0;
+	asm_stack[asm_bp + rel_pos] = asm_reg0;
 }
 
 function asm_reg0_stack_read_real(rel_pos)
 {
-	asm_reg0_real = stack[asm_bp + rel_pos];
+	asm_reg0_real = asm_stack[asm_bp + rel_pos];
 }
 
 function asm_reg0_stack_write_real(rel_pos)
 {
-	stack[asm_bp + rel_pos] = asm_reg0_real;
+	asm_stack[asm_bp + rel_pos] = asm_reg0_real;
 }
 
 
@@ -189,7 +128,7 @@ function asm_load_matrix(rows, cols) //n,m
 		asm_reg0[i] = new Array(cols);
 		for(j = cols-1; j>=0; j--)	
 		{
-			eax = stack[--asm_sp];
+			eax = asm_stack[--asm_sp];
 			asm_reg0[i][j] = eax;
 		}
 	}
@@ -205,9 +144,9 @@ function asm_reg0_dub_matrix()
 
 function asm_string_get_elm()
 {	
-	var s = stack[--asm_sp];
+	var s = asm_stack[--asm_sp];
 	
-	var i = stack[--asm_sp];
+	var i = asm_stack[--asm_sp];
 	
 	if (i >= s.length)
 		cortex.error_run('Index out of bounds.');
@@ -219,10 +158,10 @@ function asm_string_get_elm()
 function asm_string_set_elm()
 {	
 	asm_sp--;
-	var s = stack[asm_sp];
+	var s = asm_stack[asm_sp];
 	
 	asm_sp--;
-	var i = stack[asm_sp];
+	var i = asm_stack[asm_sp];
 	
 	if (i >= s.length)
 		cortex.error_run('Index out of bounds.');
@@ -233,11 +172,11 @@ function asm_string_set_elm()
 
 function asm_matrix_get_elm()
 {	
-	var m = stack[--asm_sp];
+	var m = asm_stack[--asm_sp];
 	
-	var j = stack[--asm_sp];
+	var j = asm_stack[--asm_sp];
 	
-	var i = stack[--asm_sp];	
+	var i = asm_stack[--asm_sp];	
 	
 	asm_util_matrix_boundary_check(m,i,j);
 	//asm_reg0 = m.elements[i][j];
@@ -247,11 +186,11 @@ function asm_matrix_get_elm()
 
 function asm_matrix_set_elm()
 {	
-	var m = stack[--asm_sp];
+	var m = asm_stack[--asm_sp];
 	
-	var j = stack[--asm_sp];
+	var j = asm_stack[--asm_sp];
 	
-	var i = stack[--asm_sp];	
+	var i = asm_stack[--asm_sp];	
 		
 	asm_util_matrix_boundary_check(m,i,j);
 	
@@ -563,12 +502,12 @@ function asm_str_neq()
 
 function asm_matrix_eq()
 {	
-	asm_reg0_real = asm_matrix_same(asm_reg1, asm_reg0) ? 1 : 0; 
+	asm_reg0_real = cortex.matrixsame(asm_reg1, asm_reg0) ? 1 : 0; 
 }
 
 function asm_matrix_neq()
 {	
-	asm_reg0_real = !asm_matrix_same(asm_reg1, asm_reg0) ? 1 : 0; 
+	asm_reg0_real = !cortex.matrixsame(asm_reg1, asm_reg0) ? 1 : 0; 
 }
 
 function asm_reg0_transpose()
@@ -576,16 +515,11 @@ function asm_reg0_transpose()
 	asm_reg0 = numeric.transpose(asm_reg0);
 }
 
-// copied and modifed from numeric.same = function same(x,y)
-function asm_matrix_same(x,y) {
-    return cortex.matrixsame(x,y);
-}
-
 function asm_matrix_get_slice(type)
 {
-	var m = stack[--asm_sp];
+	var m = asm_stack[--asm_sp];
 	
-	var to2 = stack[--asm_sp];
+	var to2 = asm_stack[--asm_sp];
 		
 	if (type == 1)
 	{
@@ -593,10 +527,10 @@ function asm_matrix_get_slice(type)
 	}
 	else
 	{
-		var from2 = stack[--asm_sp];	
+		var from2 = asm_stack[--asm_sp];	
 	}
 	
-	var to1 = stack[--asm_sp];
+	var to1 = asm_stack[--asm_sp];
 	
 	if (type == 2)
 	{
@@ -604,7 +538,7 @@ function asm_matrix_get_slice(type)
 	}
 	else
 	{
-		var from1 = stack[--asm_sp];
+		var from1 = asm_stack[--asm_sp];
 	}
 	
 	if (to1 < 0) to1 += m.length;
@@ -618,9 +552,9 @@ function asm_matrix_get_slice(type)
 
 function asm_matrix_set_slice(type)
 {
-	var m = stack[--asm_sp];
+	var m = asm_stack[--asm_sp];
 	
-	var to2 = stack[--asm_sp];
+	var to2 = asm_stack[--asm_sp];
 		
 	if (type == 1)
 	{
@@ -628,10 +562,10 @@ function asm_matrix_set_slice(type)
 	}
 	else
 	{
-		var from2 = stack[--asm_sp];	
+		var from2 = asm_stack[--asm_sp];	
 	}
 	
-	var to1 = stack[--asm_sp];
+	var to1 = asm_stack[--asm_sp];
 	
 	if (type == 2)
 	{
@@ -639,7 +573,7 @@ function asm_matrix_set_slice(type)
 	}
 	else
 	{
-		var from1 = stack[--asm_sp];
+		var from1 = asm_stack[--asm_sp];
 	}
 	
 	if (to1 < 0) to1 += m.length;
@@ -657,95 +591,3 @@ function asm_matrix_set_slice(type)
 }
 
 
-function asm_format_number(num, format)
-{
-	var pres = format ? 4 : 20;
-	
-	var s1 = num.toPrecision();
-	var s2 = num.toPrecision(pres);
-	
-	return s1.length < s2.length ? s1 : s2;
-}
-
-function asm_matrix_print(M, format, style)
-{
-	var s='';
-	
-	if (M===undefined || M[0]===undefined)
-	{
-		s+= "\tundefined";
-		return s;
-	}
-	
-	var rows = M.length;
-	var cols = M[0].length;
-	
-	var pres = format ? 4 : 20;
-	var padding = format ? 11 : 24;
-		
-	if (style ==1)
-	{
-		// m style
-		var sep_b = '[';
-		var sep_e = '];';
-		var sep_ln = ';\n ';
-		var sep_elm = ', ';
-	}
-	else if (style ==2)
-	{
-		// c style
-		var sep_b = '[[';
-		var sep_e = ']];';
-		var sep_ln = '],\n[ ';
-		var sep_elm = ', ';
-	}
-	else if (style ==3)
-	{
-		// LaTeX style
-		var sep_b = '';
-		var sep_e = '';
-		var sep_ln = '\\\\\n';
-		var sep_elm = '& ';
-	}
-	else if (style ==0)
-	{
-		//plain
-		var sep_b = '';
-		var sep_e = '';
-		var sep_ln = '\n';
-		var sep_elm = ' ';
-	}
-
-	s+=sep_b;
-	var s1,s2;
-	var v;
-		
-	var i,j;
-	for(i = 0; i < rows; i++)
-	{
-		var R = M[i];
-		for(j = 0 ; j < cols; j++)	
-		{						
-			v = R[j];
-			s1 = v.toPrecision();
-			s2 = v.toPrecision(pres);
-			var s_add;
-			if (s1.length < s2.length) s_add = s1; else s_add = s2;
-			if (v >= 0)
-				s_add = ' ' + s_add;
-			for( var slen = s_add.length ; slen < padding; slen++)
-				s_add += ' ';
-			
-			s += s_add;
-			if(j!=cols-1)
-				s+=sep_elm;
-		}
-		
-		if(i!=rows-1)
-			s+= sep_ln;
-	}
-	
-	s+=sep_e;	
-
-	return s;
-}

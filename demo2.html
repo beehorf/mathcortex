@@ -9,15 +9,30 @@
 
 </head>
 <body>
-<span id="result">
-</span>
+<h2>Compile and execute test</h2>
+<h4>Mathcortex code</h4>
+<pre id="code">
+M  = [2.655,  0.3959, 2.044;      
+	  0.9232, 3.959,  1.681;      
+	  2.488,  2.897,  1.076]; 
+[u s d] = svd(M);
+</pre>
+<h4>Generated code</h4>
+<pre id="code_gen">
+</pre>
+<h4>Execution Result</h4>
+<pre id="result">
+</pre>
 </body>
 
 <script>
   cortexParser.compile('M  = [2.655,  0.3959, 2.044;      0.9232, 3.959,  1.681;      2.488,  2.897,  1.076]; [u s d] = svd(M);');
-  cortex.execute(cortexParser.getCompiledCode());
+  code = cortexParser.getCompiledCode()
+  cortex.execute(code);
   
   document.getElementById("result").innerHTML = cortex.getVarVal('s', cortexParser) ;
+  document.getElementById("code_gen").innerHTML = code.code;
+  
 </script>
 
 

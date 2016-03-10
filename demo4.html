@@ -1,0 +1,103 @@
+<!-- test compiler without cortex runtime -->
+<!DOCTYPE html>
+<html>
+<head>
+
+<script src="numeric-1.2.6.min.js"></script>
+<script src="cortex_parser.js"></script>
+
+
+</head>
+<body>
+<h2>Compiler without cortex runtime</h2>
+<h4>Mathcortex code</h4>
+<pre id="code">
+
+/*function A(i,j) {
+  return 1/((i+j)*(i+j+1)/2+i+1);
+}*/
+
+
+
+function Au(u,v, n) {
+    i =20;
+  loop0(i,n) {
+     t = 0;
+    loop0(j,n)
+      t = t + 1/((i+j)*(i+j+1)/2+i+1) * u[j];
+    v[i] = t;
+  }
+  
+  //v = AA * u;
+  
+  return 0;
+}
+
+function Atu(u,v,n) 
+{
+  loop0(i,n)
+  {
+    t = 0;
+    loop0(j,n)
+      t = t + 1/((i+j)*(i+j+1)/2+j+1) * u[j];
+    v[i] = t;
+  }
+  
+  //v = trans(AA) * u;
+  
+  return 0;
+}
+
+function AtAu(u,v,w,n) {
+  Au(u,w,n);
+  Atu(w,v,n);
+  
+  return 0;
+}
+
+function spectralnorm(n) {
+  u=ones(n,1);
+  v=zeros(n,1);
+  w=zeros(n,1);
+  vv=0;
+  vBv=0;
+  
+  loop0(i,10) {
+    AtAu(u,v,w,n);
+    AtAu(v,u,w,n);
+  }
+  loop0(i,n) {
+    vBv = vBv + u[i]*v[i];
+    vv  = vv + v[i]*v[i];
+  }
+  return sqrt(vBv/vv);
+}
+
+n = 100;
+
+tic;
+sp =spectralnorm(n);
+disp(toc());
+disp("err : " + (sp - 1.2742241527925133  ));
+
+</pre>
+<h4>Generated code</h4>
+<pre id="result">
+</pre>
+</body>
+
+<script>
+	cortex = {};
+	cortex.print = cortex.print_error = cortex.print_run_error = function(s){
+		console.log(s)
+	};
+
+	code = document.getElementById("code").textContent;
+
+	cortexParser.compile(code);
+	document.getElementById("result").textContent = cortexParser.getCompiledCode().code;
+  
+</script>
+
+
+</html>

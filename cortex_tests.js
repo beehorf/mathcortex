@@ -1,7 +1,7 @@
 /*
 Copyright (c) 2012-2015 Gorkem Gencay. 
 
-This file is part of MathCortex Compiler.
+This file is part of MathCortex compiler.
 
 
 MathCortex Compiler is free software: you can redistribute it and/or modify
@@ -39,12 +39,12 @@ function test_report(result, expected, test_name)
 function test_report_mat(result, expected, test_name)
 {
 	//if (result.eql(expected))
-	if (asm_matrix_same(result, expected))
+	if (cortex.matrixsame(result, expected))
 		test_results += "test " + test_num + ": success.\n";//"'== " + expected + " success.\n"; 
 	else
 	{
-		//test_results += "'<span style='color:red' > != " + asm_matrix_print(expected, 0,0, true) + " !!!FAILED!!!!. result : '" + asm_matrix_print(result, 0,0, true) + "'</span>\n"; 
-		test_results += "<span style='color:red' >" + "test " + test_num + ":  !!!FAILED!!!! <br>expected :<br>" + asm_matrix_print(expected, 0,0, true) + "<br>result :<br>" + asm_matrix_print(result, 0,0, true) + "<br>'" + test_name + "'</span>\n"; 
+		//test_results += "'<span style='color:red' > != " + cortex.matrix_print(expected, 0,0, true) + " !!!FAILED!!!!. result : '" + cortex.matrix_print(result, 0,0, true) + "'</span>\n"; 
+		test_results += "<span style='color:red' >" + "test " + test_num + ":  !!!FAILED!!!! <br>expected :<br>" + cortex.matrix_print(expected, 0,0, true) + "<br>result :<br>" + cortex.matrix_print(result, 0,0, true) + "<br>'" + test_name + "'</span>\n"; 
 		test_any_fail = true;
 	}
 }
@@ -54,13 +54,13 @@ function test_exec(expr, result)
 	//test_results += "'";
 	if (!cortexParser.compile(expr))
 	{
-		console_print("!!!FAILED!!!! Parser error: "+ expr);
+		cortex.print("!!!FAILED!!!! Parser error: "+ expr);
 		test_any_fail = true;
 		return;
 	}
-	if (!asm_execute())
+	if (!cortex.execute(cortexParser.getCompiledCode()))
 	{
-		console_print("!!!FAILED!!!! Parser error: "+ expr);
+		cortex.print("!!!FAILED!!!! Parser error: "+ expr);
 		test_any_fail = true;
 		return;
 	}
@@ -78,13 +78,13 @@ function test_exec_mat(expr, result)
 	//test_results += "'"
 	if (!cortexParser.compile(expr))
 	{
-		console_print("!!!FAILED!!!! Parser error: "+ expr);
+		cortex.print("!!!FAILED!!!! Parser error: "+ expr);
 		test_any_fail = true;
 		return;
 	}
-	if (!asm_execute())
+	if (!cortex.execute(cortexParser.getCompiledCode()))
 	{
-		console_print("!!!FAILED!!!! Parser error:"+ expr);
+		cortex.print("!!!FAILED!!!! Parser error:"+ expr);
 		test_any_fail = true;
 		//throw new Error("!!!FAILED!!!! Runtime error.");
 		return;
@@ -191,6 +191,7 @@ function do_tests()
 		test_exec_mat( "M = [2.276789346244186, 0.36876537348143756, 0.45080351759679615, 0.34839300904423, 2.226159736281261; 0.42500006267800927, 2.0114856229629368, 1.307754920097068, 1.9121849241200835, 1.9878224346321076; 0.5171949409414083, 1.4852598016150296, 0.5614477365743369, 1.493025004165247, 1.6660545710474253; 0.43050497816875577, 2.8250119413714856, 2.7469056753907353, 0.06255048047751188, 0.19471221417188644; 1.2185607792343944, 1.4983534910716116, 1.0756771531887352, 0.924582748208195, 0.6864324007183313];\
 		[l v] = eig(M);v1 = [v[0,0], v[1,0], v[2,0], v[3,0], v[4,0]];l1 = l[0,0];+M*trans(v1) - l1*trans(v1);", [ [0],[0 ],[0 ],[0 ],[0 ]] );
 		test_exec_mat( "M = 0.1*[5, -6 1; 2 , 4 0; 0,5, 6]; b = [-1; 2; 3];x = linsolve(M,b); +M*x-b;", [ [0], [0], [0] ]);
+		test_exec("M = [    1    1    1    1    1;    1    2    3    4    5;    1    3    6   10   15;    1    4   10   20   35;    1    5   15   35   70  ]; L =cholesky(M);err = sum(abs(L*L'-M));", 0);
 		test_exec( "[x y] = lu(eye(3)+1);y ==[ 0 1 2] && x == [ 2 , 1 , 1 ; 0.5 , 1.5 , 0.5 ; 0.5 , 0.3333333333333333 , 1.3333333333333333 ];", true);
 		
 		test_exec("+[2,4;3,5] == [2,4;3,5]", 1);
@@ -288,20 +289,22 @@ function do_tests()
 					
 		test_exec(' clear all;function f(x,y,z){    return x+y+z; }  \
 					d2 = f; d1 = d2; d1("a" , "b", 1) == "ab1" && d1(2, 1 , 3) == 6;', true);
+					
+		test_exec_mat('clear all; function f(a){    return a+1;} function f(a,b) {  return a+b; } x = f(ones(3)); y = f(ones(3)) + f(ones(3), [1,2,3;3,4,5;-1,-2,-3]); y-x ', [[ 2 ,  3,  4 ],[  4,  5 ,  6 ],[  0  , -1 , -2 ]]);
 		
 	}
 	
-	console_print(">> " + test_results);
+	cortex.print(">> " + test_results);
 	if (test_any_fail)
 	{
-		console_print("There are failed tests!!!");
+		cortex.print("There are failed tests!!!");
 		update_editor();
 		return 1;
 	}
 	else
 	{
 		update_editor();	
-		console_print("All Success. \nNumber of tests : " + test_num);
+		cortex.print("All Success. \nNumber of tests : " + test_num);
 		return 0;
 	}
 }

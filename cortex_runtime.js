@@ -30,20 +30,91 @@ THE SOFTWARE.
 
 var cortex = function() { };
 
+cortex.print = cortex.print_error = cortex.print_run_error = function(s){
+	console.log(s)
+};
+cortex.disp_options = function(opts)
+{
+	opts.style = 0;
+	opts.format = true;
+}
+//if preloading it is an async function that will wait loading images than will call asm_end_func
+//image loading in browsers cant be synchronous
+cortex.execute = function ( code, onfinish, AsynLoad)
+{
+	if((typeof code === "object"))
+	{
+		AsynLoad = code.resources;
+		code = code.code;
+	}
+		
+	if ((typeof AsynLoad !== 'undefined') && AsynLoad.preload)
+	{
+		AsynLoad.asm_end_func = onfinish;
+		resourcePreload(code, AsynLoad);
+	}
+	else
+	{
+		var result = cortex.execute_aux(code, AsynLoad);
+	
+		if (onfinish)
+			onfinish(result);
+			
+		return result;
+	}
+}
+
+
+cortex.execute_aux = function(code, AsynLoad)
+{
+	var asm_module = (typeof asm_init !== 'undefined');
+	
+	try
+	{	
+		if (asm_module)
+			asm_init(cortex.heap);
+		
+		//(new Function("var ticTime = new Date();" + compiled_js_test + ";alert(sp + '  ' + ((new Date())- ticTime))"))();		
+		(new Function(code))();				
+			//throw "Invalid pragma option 'execute' : " + cortexParser.options["execute"];
+		
+		//(new Function(compiled_js))();  // this is actually : 'eval(compiled_js);' , alternative(which is also faster than raw eval) : eval.call(null, compiled_js);
+				
+		if (asm_module && asm_sp != 0 && cortex.print)
+			cortex.print("Warning: stack not cleared properly : " + asm_sp + "  " + asm_sp);
+	}
+   	catch(err)
+	{
+		if(!cortex.print_run_error)
+			throw err;
+		if ( err.message)
+			cortex.print_run_error(err.message);
+		else
+			cortex.print_run_error(err);
+			
+		return false;
+	}
+	
+	return true;
+}
+
+cortex.heap = new Array(1000); // store for global variables 
+
+
+
 cortex.ticTime = 0;
 var tableVar = {};
 var imageVar = new Array;
 
-var Preloader = function(){};
-
-Preloader.images = []; // array of Image
-Preloader.image_src = [];   // array of strings(image names)
-Preloader.image_alias = []; // array of strings(image aliases)
-Preloader.import_src = [];
-
 var plotVar = new Array;
 
 var openFigures = new Array;
+
+cortex.getVarVal = function(name, Parser)
+{		
+	return cortex.heap[Parser.getGlobalScope().vars_rel_pos[name]];
+}
+
 
 cortex.create = function(m,n)
 {
@@ -86,7 +157,7 @@ cortex.matrixsame = function(x,y) {
     for(i=0;i<n;i++) {
         //if(x[i] === y[i]) { continue; }
 		if( Math.abs(x[i] - y[i]) < 1e-9) { continue; } // !!!!!!!!!! by Gorkem !!!!!!!!!!!
-        if(typeof x[i] === "object") { if(!asm_matrix_same(x[i],y[i])) return false; }
+        if(typeof x[i] === "object") { if(!cortex.matrixsame(x[i],y[i])) return false; }
         else { return false; }
     }
     return true;
@@ -176,7 +247,7 @@ cortex.eig = function(M)
 	ret[1] = r.E.x;
 	
 	if(r.lambda.y != undefined) { 
-		console_print('eig has complex eigenvectors');
+		cortex.print('eig has complex eigenvectors');
 		ret[2] = asm_util_array_to_column_matrix(r.lambda.y);
 		ret[3] = r.E.y;
 	} else
@@ -315,7 +386,7 @@ cortex.print_var = function(var_val, var_name, format, style, header)
 	{
 		if ( typeof(var_val) == 'number')
 		{
-			var fs = asm_format_number(var_val, format)
+			var fs = cortex.format_number(var_val)
 
 			if (header)
 				s += var_name + ' = ' + fs + '\n';
@@ -335,7 +406,7 @@ cortex.print_var = function(var_val, var_name, format, style, header)
 				s += cpu_matrix_print_header( var_name, var_val, style);
 
 			if (var_val.length * var_val[0].length< 100)
-				s += asm_matrix_print(var_val,format,style) +"\n";
+				s += cortex.matrix_print(var_val) +"\n";
 			else
 				s += '\tlarge matrix(use \'disp\')';
 
@@ -396,6 +467,106 @@ function cpu_matrix_print_header(varname, M, style)
 
 		s += '[' + rows  + ', ' + cols + '] \n';
 	}
+
+	return s;
+}
+
+
+cortex.format_number = function(num)
+{
+	var opts = {};
+	cortex.disp_options(opts);
+	
+	var pres = opts.format ? 4 : 20;
+	
+	var s1 = num.toPrecision();
+	var s2 = num.toPrecision(pres);
+	
+	return s1.length < s2.length ? s1 : s2;
+}
+
+cortex.matrix_print = function(M)
+{
+	var opts = {};
+	cortex.disp_options(opts);
+	
+	var s='';
+	
+	if (M===undefined || M[0]===undefined)
+	{
+		s+= "\tundefined";
+		return s;
+	}
+	
+	var rows = M.length;
+	var cols = M[0].length;
+	
+	var pres = opts.format ? 4 : 20;
+	var padding = opts.format ? 11 : 24;
+		
+	if (opts.style ==1)
+	{
+		// m style
+		var sep_b = '[';
+		var sep_e = '];';
+		var sep_ln = ';\n ';
+		var sep_elm = ', ';
+	}
+	else if (opts.style ==2)
+	{
+		// c style
+		var sep_b = '[[';
+		var sep_e = ']];';
+		var sep_ln = '],\n[ ';
+		var sep_elm = ', ';
+	}
+	else if (opts.style ==3)
+	{
+		// LaTeX style
+		var sep_b = '';
+		var sep_e = '';
+		var sep_ln = '\\\\\n';
+		var sep_elm = '& ';
+	}
+	else if (opts.style ==0)
+	{
+		//plain
+		var sep_b = '';
+		var sep_e = '';
+		var sep_ln = '\n';
+		var sep_elm = ' ';
+	}
+
+	s+=sep_b;
+	var s1,s2;
+	var v;
+		
+	var i,j;
+	for(i = 0; i < rows; i++)
+	{
+		var R = M[i];
+		for(j = 0 ; j < cols; j++)	
+		{						
+			v = R[j];
+			s1 = v.toPrecision();
+			s2 = v.toPrecision(pres);
+			var s_add;
+			if (s1.length < s2.length) s_add = s1; else s_add = s2;
+			if (v >= 0)
+				s_add = ' ' + s_add;
+			for( var slen = s_add.length ; slen < padding; slen++)
+				s_add += ' ';
+			
+			s += s_add;
+			if(j!=cols-1)
+				s+=sep_elm;
+		}
+		
+		if(i!=rows-1)
+			s+= sep_ln;
+	}
+	
+	s+=sep_e;	
 
 	return s;
 }
@@ -475,7 +646,7 @@ function plotArray(mat, mat2, opts, mat21, mat22, opts2)
 		arrY = plotGetArray(mat2);
 
 		if (arrX.length != arrY.length)
-			console_print( 'Warning : Plot array size mismatch.');
+			cortex.print( 'Warning : Plot array size mismatch.');
 	}
 	
 	if(mat21)
@@ -490,7 +661,7 @@ function plotArray(mat, mat2, opts, mat21, mat22, opts2)
 			arrY2 = plotGetArray(mat22);
 
 			if (arrX2.length != arrY2.length)
-				console_print( 'Warning : Plot array size mismatch.');
+				cortex.print( 'Warning : Plot array size mismatch.');
 		}
 	}
 
@@ -572,15 +743,18 @@ function updateImage(id, m1, m2, m3)
 }
 
 
-function resourcePreload()
+function resourcePreload(code, AsyncLoad)
 {
-	Preloader.images = new Array();
-	for(var i = 0; i < Preloader.image_src.length; i++)
+	cortex.resources = {};
+	cortex.resources.images = [];
+	cortex.resources.images_alias = [];
+	cortex.resources.images_src = [];
+	for(var i = 0; i < AsyncLoad.image_src.length; i++)
 	{
 		var img = new Image;
 		img.done = false;
 
-		Preloader.images.push(img);
+		cortex.resources.images.push(img);
 
 		img.onload = function() {
 			var canvas = document.createElement("canvas");
@@ -593,12 +767,12 @@ function resourcePreload()
 
 			this.imgPixels = ctx.getImageData(0, 0, this.width, this.height).data;
 
-			console_print("Image loaded : " + this.src);
+			cortex.print("Image loaded : " + this.src);
 
 			var flag = true;
-			for(var i = 0; i < Preloader.images.length; i++)
+			for(var i = 0; i < cortex.resources.images.length; i++)
 			{
-				if (Preloader.images[i].done == false)
+				if (cortex.resources.images[i].done == false)
 				{
 					flag = false;
 					break;
@@ -607,29 +781,34 @@ function resourcePreload()
 
 			if (flag)
 			{
-				asm_preload_finish();
+				cortex.execute_aux(code, AsyncLoad);
+	
+				if (AsyncLoad.asm_end_func)
+					AsyncLoad.asm_end_func();
 			}
 		}
 
 		img.onerror = function(ev) {
-			console_print("Error: The image could not be loaded : " + this.src);
+			cortex.print("Error: The image could not be loaded : " + this.src);
 		}
 	}
 
-	for(var i = 0; i < Preloader.image_src.length; i++)
+	for(var i = 0; i < AsyncLoad.image_src.length; i++)
 	{
-		Preloader.images[i].src = "php/imread.php?pic=" + encodeURIComponent(Preloader.image_src[i]);
-		console_print("Image loading : " + Preloader.image_src[i]);
+		cortex.resources.images[i].src = "php/imread.php?pic=" + encodeURIComponent(AsyncLoad.image_src[i]);
+		cortex.resources.images_alias[i] = AsyncLoad.image_alias[i];
+		cortex.resources.images_src[i] = AsyncLoad.image_src[i];
+		cortex.print("Image loading : " + AsyncLoad.image_src[i]);
 	}
 }
 
 function imageRead(url)
 {
-	for(var i = 0; i < Preloader.image_src.length; i++)
+	for(var i = 0; i < cortex.resources.images.length; i++)
 	{
-		if (Preloader.image_src[i] == url || Preloader.image_alias[i] == url)
+		if (cortex.resources.images_src[i] == url || cortex.resources.images_alias[i]  == url)
 		{
-			var img = Preloader.images[i];
+			var img = cortex.resources.images[i];
 
 			var width = img.width;
 			var height = img.height;
@@ -664,3 +843,4 @@ function imageRead(url)
 
 	cortex.error_run("Image is not in preload list.");
 }
+

@@ -23,12 +23,12 @@ along with MathCortex Compiler. If not, see <http://www.gnu.org/licenses/>.
 
 cortexParser.compile = function(code_inp, namespace)
 {
-	//ImportAsyncLoad(code_inp, namespace);
+	/*ImportAsyncLoad(code_inp, namespace);
 	
 	if (namespace !== undefined)
 		cortexParser.namespace = namespace;
 	else
-		cortexParser.namespace = "global";
+		cortexParser.namespace = "global";*/
 		
 	return cortexParser.compile_aux(code_inp);
 }
@@ -49,8 +49,8 @@ cortexParser.compile_aux = function(code_inp)
 		compiled_asm = "";
 		compiled_js_test = "";
 		
-		if(console_print_error)
-			console_print_error(err.message);
+		if(cortexParser.printError)
+			cortexParser.printError(err.message);
 		else	
 			throw(err);
 		
@@ -60,32 +60,8 @@ cortexParser.compile_aux = function(code_inp)
 	return true;
 };
 
-cortexParser.execute = function() // todo : merge with asm_execute_aux? fix preload
-{
-	try
-	{
-		if(cortexParser.options["execute"] == "JS")
-			(new Function(cortexParser.getCompiledJS()))();				
-		else if(cortexParser.options["execute"] == "ASM")
-			(new Function(cortexParser.getCompiledASM()))();
-		else
-			throw "Invalid pragma option 'execute' : " + cortexParser.options["execute"];
-	}
-   	catch(err)
-	{
-		if(!console_print_run_error)
-			throw err;
-		else if ( err.message)
-			console_print_run_error(err.message);
-		else
-			console_print_run_error(err);
-			
-		return false;
-	}
-	
-	return true;
-	
-};
+cortexParser.printError = function(s){ console.log(s)};
+cortexParser.print = function(s){ console.log(s)};
 
 cortexParser.options = { "execute": "JS" };
 
@@ -98,7 +74,12 @@ cortexParser.getInpPos = function()
 
 cortexParser.getCompiledCode = function()
 {
-	return compiled_asm;
+	if(cortexParser.options["execute"] == "JS")
+		return {"code" : cortexParser.getCompiledJS(), "resources" : PreloadList};
+	else if(cortexParser.options["execute"] == "ASM")
+		return {"code" : cortexParser.getCompiledASM(), "resources" : PreloadList};
+	
+	return {"code":"", "resources" : null};
 };
 
 cortexParser.getCompiledJS = function()
@@ -154,7 +135,6 @@ var cur_scope;
 
 var scope_stack = new Array();
 var user_func_codes = new Array();
-var user_func_codes_pos = new Array(); // used for error reporting only
 var report_pos = 0; // used for error reporting only
 var last_success_pos = 0; // used for error reporting only
 
@@ -183,6 +163,8 @@ var ast_postfix = new Array();
 var anim_count = 0;
 var func_uid;
 var func_gen_names;
+
+var PreloadList = {};
 
 function AST(op, num_nodes, type, description){
 	this.nodes = new Array(num_nodes);
@@ -2074,13 +2056,13 @@ function VariableScope(use_heap)
 		delete this.vars_deduced[name]; 
 	}
 	
-	this.get_var_value = function(name, type)
+	/*this.get_var_value = function(name, type)
 	{
 		if(!use_heap)
 			Error_parse("Internal error. Heap")
 			
 		return heap[this.vars_rel_pos[name]];
-	}
+	}*/
 }
 
 
@@ -2122,11 +2104,29 @@ function ArithmeticExpr()
 }
 
 
+// parse function params
+function FunctionParams(func_desc)
+{
+	Match('(');
+	
+	func_desc.proto_param_count = 0;
+	func_desc.proto_param_names = new Array();
+	while( Look != ')')
+	{		   
+	   func_desc.proto_param_names[func_desc.proto_param_count] = GetName();
+	   
+	   func_desc.proto_param_count++;
+	   if (Look != ')')
+	   {
+		 Match(',');
+	   }
+	}
+	Match(')');
+}
+
 function DoFunction()
 {
-	var cur_pos = inp_pos-1;
-	
-	var braces = 0, firstBracesMet = false;
+	var braces = 1;
 	
 	var rtype_name = GetName();
 	var rtype = 2;
@@ -2135,29 +2135,31 @@ function DoFunction()
 		for (var i=0;i<types.length;i++)
 			if (types[i] == rtype_name) rtype = i;
 	
+	
+	var func_desc = {};
+	
 	var Name = GetName();
 	
-	user_func_codes_pos[Name] = cur_pos;
+	FunctionParams(func_desc);
 	
-	Name = Name.replace(".", "_");
+	Match('{');
 	
-	var code = "function "+ Name;
-	code += Look;
+	func_desc.code = "{ " + Look;
+	func_desc.code_pos = inp_pos - 3; // used for error reporting only
 	
-	while(true)
+	while(true)  // bug : what happens when comments contain { or } ?
 	{
 		GetChar();
-		code += Look;
+		func_desc.code += Look;
 		
 		if (Look =='{')
 		{
 		   braces++;
-		   firstBracesMet =true;
 		}
 		else if (Look=='}')
 			braces--;
 		
-		if(braces==0 && firstBracesMet)
+		if(braces==0)
 			break;
 		
 		if(end_of_prog)
@@ -2171,60 +2173,42 @@ function DoFunction()
 		Error_parse("Inline functions are not supported.");
 	}
 	
-	if (user_func_codes[Name] != undefined)
+	var func_desc_name = Name + ':' + func_desc.proto_param_count;
+	if (user_func_codes[func_desc_name] != undefined)
 		Error_parse("Function already defined: '" + Name + "'.");
 	
-	user_func_codes[Name] = code;
+	user_func_codes[func_desc_name] = func_desc;
 	
 	comp_define_var_const(Name, function_list.length , 5);
 	function_list.push( new FunctionDefs(Name, [], [rtype] , "user", true) );
-	//comp_define_var(Name, 5);
 	
 }
 
-function DoFunctionLink(func_name, code, params_count, params_type, return_delegates, params_delegate)
+function DoFunctionLink(func_name, func_desc, params_count, params_type, return_delegates, params_delegate)
 {
 	var old_inp = inp;
 	var old_inp_pos = inp_pos;
 	var old_look = Look;
 	var param_description = "";
 	
-	inp = code;
+	inp = func_desc.code;
 	inp_pos = 0;
 	end_of_prog = false; 
 	
 	GetChar();
 	SkipWhite();
 	
-	if (GetName() != 'function')
-		Error_parse("Internal Error. ");
-		
-	var fName = GetName();
+	var js_def = 'function asm_func_' + func_name + '(';
 	
-	var test_def = 'function asm_func_' + func_name + '(';
-	
-	
-	Match('(');
-	// parse function params
-	var proto_param_count = 0;
-	var proto_param_names=new Array();
-	while( Look != ')')
-	{		   
-	   proto_param_names[proto_param_count] = GetName();
-	   
-	   test_def += proto_param_names[proto_param_count];
-	   param_description += types[ params_type[ proto_param_count] ] + " ";
-	   
-	   proto_param_count++;
-	   if (Look != ')')
-	   {
-		 Match(',');
-		 test_def += ', ';
-	   }
+	for(var i=0;i < params_count; i++)
+	{
+	   if (i != 0)
+		  js_def += ' , ';
+	   js_def += func_desc.proto_param_names[i];
+	   param_description += types[ params_type[ i] ] + " ";
 	}
-	Match(')');
 	
-	if ( proto_param_count != params_count)
+	if ( func_desc.proto_param_count != params_count)
 	{
 		Error_parse("Invalid number of parameters.");
 	}
@@ -2237,14 +2221,14 @@ function DoFunctionLink(func_name, code, params_count, params_type, return_deleg
 	compiled_js_test = "";
 	ast_postfix = new Array();
 	
-	Emitln_ast( test_def + ')    // ' + param_description + '\n{');
+	Emitln_ast( js_def + ')    // ' + param_description + '\n{');
 	
 	Emitln( 'function asm_func_' + func_name + '()  // ' + param_description);
 	Emitln( '{');
 	
 	
 	cur_scope = new VariableScope();
-	cur_scope.name = fName;
+	cur_scope.name = func_name;
 	scope_stack.push(cur_scope);
 	
 	Delegate.return_stack.push([]);
@@ -2254,17 +2238,17 @@ function DoFunctionLink(func_name, code, params_count, params_type, return_deleg
 		
 		if(params_type[i] == 5 || params_type[i] == 6)
 		{
-			cur_scope.define_param(proto_param_names[i], 6, -params_count-1 +i);
-			Delegate.Assign(params_type[i], params_delegate[i], proto_param_names[i]);
+			cur_scope.define_param(func_desc.proto_param_names[i], 6, -params_count-1 +i);
+			Delegate.Assign(params_type[i], params_delegate[i], func_desc.proto_param_names[i]);
 		}
 		else
 		{
-			cur_scope.define_param(proto_param_names[i], params_type[i], -params_count-1 +i);
+			cur_scope.define_param(func_desc.proto_param_names[i], params_type[i], -params_count-1 +i);
 		}
 		
 	}
 	
-	Emitln("stack[asm_sp++] = asm_bp;");
+	Emitln("asm_stack[asm_sp++] = asm_bp;");
 	Emitln("asm_bp = asm_sp;");
 	
 	if (!StatementBlock())
@@ -2280,13 +2264,6 @@ function DoFunctionLink(func_name, code, params_count, params_type, return_deleg
 	return_delegates.delegates = Delegate.map[ cur_scope.name + "_retDel"];
 	
 	Delegate.return_stack.pop();
-	
-	
-	/*Emitln("asm_sp = asm_bp;");
-	Emitln("asm_bp = stack[--asm_sp];");
-	
-	if (params_count >0 )
-		Emitln("asm_sp -= " + params_count + ";");*/
 	
 	scope_stack.pop();
 	if(scope_stack.length == 0)
@@ -2343,7 +2320,7 @@ function DoReturn(auto)
 		
 	cur_scope.return_type = rtype;
 
-	Emitln("asm_sp = asm_bp;\nasm_bp = stack[--asm_sp];");
+	Emitln("asm_sp = asm_bp;\nasm_bp = asm_stack[--asm_sp];");
 	if (cur_scope.param_count_ref>0)
 		Emitln("asm_sp -= " + cur_scope.param_count_ref + ";");
 		
@@ -2569,15 +2546,52 @@ function DoLoop(is_zero_begin)
 	Emitln_ast("}\n");
 }
 
+function DoImport(module_code)
+{	
+	var old_inp = inp;
+	var old_inp_pos = inp_pos;
+	var old_look = Look;
+	
+	inp = module_code;
+	inp_pos = 0;
+	end_of_prog = false; 
+	
+	GetChar();
+	SkipWhite();
+	
+	while(!end_of_prog)
+	{
+		if (CheckAhead("function") || CheckAhead("real") || CheckAhead("matrix") || CheckAhead("string") || CheckAhead("bool"))
+		{
+			DoFunction();
+		}
+		else
+		{
+			Statement();
+		}
+	}
+	
+	end_of_prog = false; 
+	
+	Look = old_look;
+	inp = old_inp;
+	inp_pos = old_inp_pos;
+	
+}
+
 function DoPragma()
 {
 	var name = GetName();
 	if(Look == ';')
-		console_print(cortexParser.options[name]);
+		cortexParser.print(cortexParser.options[name]);
 	else
 	{
 		var val = GetName();
-		cortexParser.options[name] = val;
+		
+		if (val == 'JS' || val == 'ASM')
+			cortexParser.options[name] = val;
+		else
+			Error_parse("Invalid pragma option 'execute' : " + val);
 	}
 	
 	Match(';');
@@ -2607,9 +2621,9 @@ function EmitReadVar(name, type)
 	else if(is_global)
 	{
 		if(type == 1 || type == 2)
-			Emitln("asm_reg0_real = heap[" + global_scope.vars_rel_pos[name] + "]; // " + name);
+			Emitln("asm_reg0_real = asm_heap[" + global_scope.vars_rel_pos[name] + "]; // " + name);
 		else
-			Emitln("asm_reg0 = heap[" + global_scope.vars_rel_pos[name] + "]; // " + name);
+			Emitln("asm_reg0 = asm_heap[" + global_scope.vars_rel_pos[name] + "]; // " + name);
 	}
 	else
 	{
@@ -2641,9 +2655,9 @@ function EmitWriteVar(name, type)
 	else if (is_global)
 	{
 		if(type == 1 || type == 2)
-			Emitln("heap[" + global_scope.vars_rel_pos[name] + "] = " + "asm_reg0_real;  //" + name );
+			Emitln("asm_heap[" + global_scope.vars_rel_pos[name] + "] = " + "asm_reg0_real;  //" + name );
 		else
-			Emitln("heap[" + global_scope.vars_rel_pos[name] + "] = " + "asm_reg0;  //" + name );
+			Emitln("asm_heap[" + global_scope.vars_rel_pos[name] + "] = " + "asm_reg0;  //" + name );
 	}
 	else
 	{
@@ -3003,42 +3017,53 @@ function Statement()
 	return all_paths_return;
 }
 
+function PreloadItem()
+{
+	Match('"');
+	PreloadList.image_src.push( GetString() );
+	Match('"');
+	
+	if (CheckAhead("as"))
+	{
+		GetName();
+		Match('"');
+		PreloadList.image_alias.push( GetString() );
+		Match('"');
+	}
+	else
+	{
+		PreloadList.image_alias.push( "__" );
+	}
+}
 
 function Preload()
 {
-	asm_async_preload = false;
+	PreloadList.preload = false;
 	
-	if(CheckAhead("preload"))
+	while(CheckAhead("preload"))
 	{
-		GetName();
-		Match('{');
+		PreloadList.preload = true;
 		
-		while ( Look != "}") 
+		GetName();
+		if(Look != '{')
 		{
-			asm_async_preload = true;
-			Match('"');
-			Preloader.image_src.push( GetString() );
-			Match('"');
-			
-			if (CheckAhead("as"))
-			{
-				GetName();
-				Match('"');
-				Preloader.image_alias.push( GetString() );
-				Match('"');
-			}
-			else
-			{
-				Preloader.image_alias.push( "__" );
-			}
-			
-			if (Look == "}")
-				break;
-				
-			Match(",");
+			PreloadItem();
 		}
-		//Block();
-		Match('}');
+		else
+		{
+			Match('{');
+			while ( Look != "}") 
+			{
+				PreloadItem();
+				
+				if (Look == "}")
+					break;
+					
+				Match(",");
+			}
+			//Block();
+			Match('}');
+		}
 	}
 }
 
@@ -3081,12 +3106,12 @@ function ImportAsyncLoad(code_inp)
 			{
 				for(var i = 0; i < files.length; i++)
 				{
-					console_print(" --- " + files[i] + ' --- \r\n' + data_loaded[file_url] + '\r\n');
+					cortexParser.print(" --- " + files[i] + ' --- \r\n' + data_loaded[file_url] + '\r\n');
 					ImportAsyncLoad(data_loaded[file_url]);
 				}
 					
 				/*cortexParser.compile_aux(code_inp);*/
-				console_print("import load done");
+				cortexParser.print("import load done");
 			}
 		});
 		
@@ -3117,6 +3142,8 @@ function ImportAsyncLoad(code_inp)
 
 function Import()
 {
+	DoImport(module_cortex_static);
+	
 	while(CheckAhead("import"))
 	{
 		GetName();
@@ -3142,23 +3169,23 @@ function Program()
 			GetName();
 			var var_name = GetName();
 			if(var_name=="all")
+			{
 				comp_clear_all();
+				Emitln_ast("cortex.heap = new Array(1000);");
+				Emitln("cortex.heap = new Array(1000);")
+			}
 			else
 			{
+
 				comp_clear_var(var_name);
 			}
+			
+			
 		}
 		else
 		{
 			Statement();
 		}
-	//Block();
-	
-	/*if (!end_of_prog)
-	{
-		Error_parse("Unexpected '}'.");
-	}*/
-	
 	}
 	
 	if (__ans_pos >= 0)
@@ -3211,7 +3238,7 @@ function FunctionDefs(name, args, retvals, body, assignment_copy_needed, ast_bod
 	this.retvals = retvals;
 	this.body = body;
 	this.assignment_copy_needed = assignment_copy_needed;
-	this.ast_body = ast_body;
+	this.ast_body = ast_body;  // used by eig, lu, svd etc
 }
 
 
@@ -3238,9 +3265,9 @@ new FunctionDefs("linspace", [ 2,2 ], [3 ], "	asm_reg0 = [numeric.linspace(param
 new FunctionDefs("svd", [3 ], [ 3,3,3 ], 
 '\	var r = numeric.svd(param0); \
 \n\	asm_reg0 = r.U ; \
-\n\	stack[asm_sp++] = asm_reg0; \
+\n\	asm_stack[asm_sp++] = asm_reg0; \
 \n\	asm_reg0 = [r.S]; \
-\n\	stack[asm_sp++] = asm_reg0;\
+\n\	asm_stack[asm_sp++] = asm_reg0;\
 \n\	asm_reg0 = r.V;' , false, 
 '	var r = numeric.svd(param0);\n	return [r.U, [r.S], r.V];'
 ),		
@@ -3250,27 +3277,27 @@ new FunctionDefs("linsolve", [3,3], [ 3 ],
 \n\	asm_reg0 =  asm_util_array_to_column_matrix(numeric.solve(param0, asm_util_column_matrix_to_array(param1), false));" , false),
 new FunctionDefs("lu", [3], [ 3,3 ], 
 "\	if(param0.length != param0[0].length) cortex.error_run('matrix must be square.');\
-\	var r = numeric.LU(param0); \
+\n\	var r = numeric.LU(param0); \
 \n\	asm_reg0 = r.LU ; \
-\n\	stack[asm_sp++] = asm_reg0;\
+\n\	asm_stack[asm_sp++] = asm_reg0;\
 \n\	asm_reg0 = [r.P];" , false,
 '	var r = numeric.LU(param0);\n	return [r.LU, [r.P]];'
 ),
 new FunctionDefs("cholesky", [3], [ 3 ], 
 "\	if(param0.length != param0[0].length) cortex.error_run('matrix must be square.');\
-\	var r = cortex.cholesky(param0); \
+\n\	var r = cortex.cholesky(param0); \
 \n\	asm_reg0 = r; " , false),
 new FunctionDefs("eig", [3], [ 3,3,3,3 ], 
 "\	var r = cortex.eig(param0); \
 \n\	asm_reg0 = r[0]; \
-\n\	stack[asm_sp++] = asm_reg0;\
+\n\	asm_stack[asm_sp++] = asm_reg0;\
 \n\	asm_reg0 = r[1];\
-\n\	stack[asm_sp++] = asm_reg0;\
+\n\	asm_stack[asm_sp++] = asm_reg0;\
 \n\	asm_reg0 = r[2];\
-\n\	stack[asm_sp++] = asm_reg0;\
+\n\	asm_stack[asm_sp++] = asm_reg0;\
 \n\	asm_reg0 = r[3];" 
 , false,
-'	var r = cortex.eig(param0);\n	return r;'
+'\	var r = cortex.eig(param0);\n	return r;'
 ),
 new FunctionDefs("close", [ 2 ], [ 2 ], "	asm_reg0_real = closeFigures(param0);\n	" , false),
 new FunctionDefs("close", [ 4 ], [ 2 ], "	asm_reg0_real = closeFigures(param0);\n	" , false),
@@ -3291,9 +3318,9 @@ new FunctionDefs("imshow", [3,3,3 ], [ 2 ], "	asm_reg0_real = showImage(param0,p
 new FunctionDefs("imread", [ 4 ], [ 3,3,3 ], 
 '\	var r = imageRead(param0); \
 \n\	asm_reg0 = r.R ; \
-\n\	stack[asm_sp++] = asm_reg0; \
+\n\	asm_stack[asm_sp++] = asm_reg0; \
 \n\	asm_reg0 = r.G; \
-\n\	stack[asm_sp++] = asm_reg0;\
+\n\	asm_stack[asm_sp++] = asm_reg0;\
 \n\	asm_reg0 = r.B;' , false,
 '	var r = imageRead(param0);\n	return [r.R, r.G, r.B];'
 ),
@@ -3305,21 +3332,24 @@ new FunctionDefs("numcols", [3], [ 2 ],
 "\	asm_reg0_real = param0[0].length;" , false),
 new FunctionDefs("numrows", [3], [ 2 ], 
 "\	asm_reg0_real = param0.length;" , false),
+new FunctionDefs("numel", [3], [ 2 ], 
+"\	asm_reg0_real = param0.length*param0[0].length;" , false),
+new FunctionDefs("size", [3], [ 2,2], 
+"\	asm_reg0_real = param0.length;" , false, 'return [param0.length, param0[0].length];'),
 new FunctionDefs("tic", [ ], [ 7 ], 
 "\	cortex.ticTime = new Date();asm_reg0 = undefined" , false),
 new FunctionDefs("toc", [ ], [ 2 ], 
 "\	asm_reg0_real = (new Date())- cortex.ticTime;" , false),
 new FunctionDefs("clc", [ ], [7 ], "	document.getElementById('output_win_txt').innerHTML = ''\n	asm_reg0 = undefined;" , false),
-new FunctionDefs("animstop", [ 2 ], [ 7 ], "	clearInterval(openFigures[param0].timerID);\n	console_print('Anim is stopped');" , false),
+new FunctionDefs("animstop", [ 2 ], [ 7 ], "	clearInterval(openFigures[param0].timerID);\n	cortex.print('Anim is stopped');" , false),
 new FunctionDefs("animdraw", [ 2, 3 ], [ 7 ], "	updateImage(param0, param1);" , false),
 new FunctionDefs("animdraw", [ 2, 3, 3, 3 ], [ 7 ], "	updateImage(param0, param1, param2, param3);" , false),
 new FunctionDefs("_dotests", [  ], [ 2 ], "	asm_reg0_real = do_tests();" , false),
-new FunctionDefs("_heap", [  ], [ 7 ], "	console_print(heap);" , false),
-new FunctionDefs("_stack", [  ], [ 7 ], "	console_print(stack);" , false),
+new FunctionDefs("_heap", [  ], [ 7 ], "	cortex.print(cortex.heap);" , false),
 new FunctionDefs("_bench", [ 2 ], [ 7 ], "	asm_reag0_real = benchmark1(param0);" , false),
 new FunctionDefs("_alert", [ 4 ], [ 7 ], "	alert(param0);\n	asm_reg0 = undefined;" , false),
 //new FunctionDefs("_js", [ 4 ], [ 4 ], "	asm_reg0 = eval(param0);" , false),
-new FunctionDefs("_compile", [  ], [ 2 ], "	if(compile( ace_editor.getSession().getValue() )) console_print('Success.');update_editor();" , false),
+new FunctionDefs("_compile", [  ], [ 2 ], "	if(compile( ace_editor.getSession().getValue() )) cortex.print('Success.');update_editor();" , false),
 
 new FunctionDefs("abs", [  ], [  ], "	throw 'Internal error'" , false),
 new FunctionDefs("acos", [  ], [  ], "	throw 'Internal error'" , false),
@@ -3343,6 +3373,53 @@ new FunctionDefs("anim", [  ], [  ], "	throw 'Internal error'" , false),
 new FunctionDefs("print", [  ], [  ], "	throw 'Internal error'" , false),
 new FunctionDefs("disp", [  ], [  ], "	throw 'Internal error'" , false)
 );
+
+var module_cortex_static = "\
+function mean(X) \
+{\
+    return sum(X) / numel(X);\
+}\
+\
+function var(data) \
+{\
+    n = numel(data);\
+    sum2 = 0;\
+    \
+    mn = sum(data) / n;\
+\
+    loop0(i,numrows(data))\
+        loop0(j, numcols(data))\
+        {\
+            x = data[i,j];\
+            sum2 = sum2 + (x - mn)*(x - mn);\
+        }\
+    \
+    \
+    variance = sum2 / (n - 1);\
+    return variance;\
+}\
+\
+function std(X) \
+{\
+    return sqrt(var(X));\
+}\
+\
+\
+function diff(X)\
+{\
+    n = numrows(X);\
+    m = numcols(X)-1;\
+    ret = zeros( n, m); \
+    \
+    loop0(i,n)\
+       loop0(j, m)\
+       {\
+          ret[i,j] = X[i,j+1] - X[i,j];\
+       }\
+    \
+    return ret;\
+}\
+";
 
 cortexParser.functionList = function_list;
 var function_list_lib_size = function_list.length;
@@ -3524,11 +3601,11 @@ function StandartFunctions(Name, func_name, params_count, params_type, params_de
 			EmitFuncln("");
 			
 			var suffix = "2_" + return_types_callback[0];
-			EmitFuncln("	var id = showImage(numeric.rep([100,100],0));\n	openFigures[id].timerID = setInterval( function(){ try { asm_reg0_real = id;asm_push();\n		asm_fjump_table_" + suffix + "(param0);//asm_call_reg0();\n		if (openFigures[id] == undefined || openFigures[id].closed)	{\n			clearInterval(openFigures[id].timerID);		console_print('Animation is stopped');update_editor(); } } catch(err) { for(var i = 0 ; i < openFigures.length ; i++)	clearInterval(openFigures[i].timerID); console_print_run_error(err.message); }		}, " + interval + ");");			
-			EmitFuncln("	console_print('Animation is started');\n	asm_reg0_real = id;");
+			EmitFuncln("	var id = showImage(numeric.rep([100,100],0));\n	openFigures[id].timerID = setInterval( function(){ try { asm_reg0_real = id;asm_push();\n		asm_fjump_table_" + suffix + "(param0);//asm_call_reg0();\n		if (openFigures[id] == undefined || openFigures[id].closed)	{\n			clearInterval(openFigures[id].timerID);		cortex.print('Animation is stopped');update_editor(); } } catch(err) { for(var i = 0 ; i < openFigures.length ; i++)	clearInterval(openFigures[i].timerID); cortex.print_run_error(err.message); }		}, " + interval + ");");			
+			EmitFuncln("	cortex.print('Animation is started');\n	asm_reg0_real = id;");
 			
-			EmitFuncln_ast("	var id = showImage(numeric.rep([100,100],0));\n	openFigures[id].timerID = setInterval( function(){ try { \n		asm_fjump_table_" + suffix + "(param0)(id);\n		if (openFigures[id] == undefined || openFigures[id].closed)	{\n			clearInterval(openFigures[id].timerID);		console_print('Animation is stopped');update_editor(); } } catch(err) { for(var i = 0 ; i < openFigures.length ; i++)	clearInterval(openFigures[i].timerID); console_print_run_error(err.message); }		}, " + interval + ");");			
-			EmitFuncln_ast("	console_print('Animation is started');\n	return id;");
+			EmitFuncln_ast("	var id = showImage(numeric.rep([100,100],0));\n	openFigures[id].timerID = setInterval( function(){ try { \n		asm_fjump_table_" + suffix + "(param0)(id);\n		if (openFigures[id] == undefined || openFigures[id].closed)	{\n			clearInterval(openFigures[id].timerID);		cortex.print('Animation is stopped');update_editor(); } } catch(err) { for(var i = 0 ; i < openFigures.length ; i++)	clearInterval(openFigures[i].timerID); cortex.print_run_error(err.message); }		}, " + interval + ");");			
+			EmitFuncln_ast("	cortex.print('Animation is started');\n	return id;");
 		}
 		else
 		{
@@ -3537,15 +3614,12 @@ function StandartFunctions(Name, func_name, params_count, params_type, params_de
 	}
 	else if ( Name =='disp' || Name == 'print')
 	{
-		var style = document.getElementById('format_style').selectedIndex;
-		var format = document.getElementById('pres_check').checked;
-	
 		if ( params_count > 1)
 			Error_parse('disp : Invalid parameter count.');
 		
-		EmitFuncln(DispBody(params_type[0], style, format));
+		EmitFuncln(DispBody(params_type[0]));
 		
-		EmitFuncln_ast( DispBody(params_type[0], style, format));
+		EmitFuncln_ast( DispBody(params_type[0]));
 				
 		return_types = [7];
 	}
@@ -3595,6 +3669,8 @@ function LinkFunc(Name, params_count, params_type, return_delegates, params_dele
 
 	var func_name = GetLinkFunctionName(Name, params_type, params_count);
 	
+	var func_desc = user_func_codes[Name + ':' + params_count];
+	
 	if(linked_functions[func_name] == undefined)
 	{
 		linked_functions[func_name] = { return_types : [2] };
@@ -3605,12 +3681,12 @@ function LinkFunc(Name, params_count, params_type, return_delegates, params_dele
 					break;
 				}
 		
-		if (user_func_codes[Name] != undefined)
+		if (func_desc != undefined)
 		{
 			var report_pos_old = report_pos;
-			report_pos = user_func_codes_pos[Name];
+			report_pos = func_desc.code_pos;
 			
-			var link_result = DoFunctionLink(func_name, user_func_codes[Name], params_count, params_type, return_delegates, params_delegate);
+			var link_result = DoFunctionLink(func_name, func_desc, params_count, params_type, return_delegates, params_delegate);
 			return_types = link_result[0];
 			report_pos = report_pos_old;
 			
@@ -3628,7 +3704,7 @@ function LinkFunc(Name, params_count, params_type, return_delegates, params_dele
 	{
 		return_types = linked_functions[func_name].return_types; 
 		
-		if( user_func_codes[Name] == undefined)
+		if( func_desc == undefined)
 			rvalue[rvalue_pos] = true;
 	}
 	
@@ -3637,28 +3713,28 @@ function LinkFunc(Name, params_count, params_type, return_delegates, params_dele
 }
 
 
-function DispBody(type, style, format)
+function DispBody(type)
 {
 	var fbody = "";
 	if (type ==3)
-		fbody +='	console_print( asm_matrix_print( param0, ' + format + ' , ' + style + ') );\n';
+		fbody +='	cortex.print( cortex.matrix_print( param0) );\n';
 	else if	(type ==2)
-		fbody +='	console_print( asm_format_number( param0, ' + format + ' , ' + style + ') );\n';
+		fbody +='	cortex.print( cortex.format_number( param0) );\n';
 	else if (type == 7)
 	{
 		//void
 	}
 	else if (type == 4)
 	{
-		fbody +='	console_print( param0 );\n';
+		fbody +='	cortex.print( param0 );\n';
 	}
 	else if (type == 5 || type == 6)
 	{
-		fbody +='	console_print( "function : " + param0 );\n';
+		fbody +='	cortex.print( "function : " + param0 );\n';
 	}
 	else
 	{
-		fbody +='	console_print( param0 );\n';
+		fbody +='	cortex.print( param0 );\n';
 	}
 	
 	fbody +='	asm_reg0 = undefined;\n';
@@ -3732,9 +3808,6 @@ function comp_clear_all()
 	const_vars_type=[];
 	
 	define_language_consts();
-	
-	heap = new Array(1000); 
-	stack = new Array(1000);
 }
 
 function define_language_consts()
@@ -3769,7 +3842,7 @@ function import_global_scope()
 			continue;
 		var type = global_scope.get_var_type(v);
 
-		code += "var " + v + " = heap["+ global_scope.vars_rel_pos[v] + "];\n";
+		code += "var " + v + " = cortex.heap["+ global_scope.vars_rel_pos[v] + "];\n";
 	}
 	
 	return code + "\n";
@@ -3786,7 +3859,7 @@ function export_global_scope()
 			continue;
 		var type = global_scope.get_var_type(v);
 
-		code += "heap["+ global_scope.vars_rel_pos[v] + "] = " + v + ";\n";
+		code += "cortex.heap["+ global_scope.vars_rel_pos[v] + "] = " + v + ";\n";
 	}
 	
 	return code + "\n";
@@ -3800,15 +3873,16 @@ function Init(code_exe)
 	inp = code_exe;
 	inp_pos = 0;
 	end_of_prog = false;	
-	//console_js = document.getElementById('output_win_txt').value ;
+	
 	compiled_asm = "";
 	functions_asm = "";
 	
 	compiled_js_test = import_global_scope();
-	
 	functions_js_test = "";
+	
 	ast_postfix = new Array();
     ast_root = new Array();
+	
 	__ans_pos = -1;
 	
 	global_scope.vars_deduced = [];
@@ -3819,7 +3893,6 @@ function Init(code_exe)
 	
 	rvalue_pos = 0;
 	user_func_codes = new Array();
-	user_func_codes_pos = new Array();
 	report_pos = 0;
 	function_list.length = function_list_lib_size;
 	
@@ -3828,10 +3901,11 @@ function Init(code_exe)
 	
 	cur_scope = undefined;
 	scope_stack = new Array();
-	
-	Preloader.image_src = new Array();
-	Preloader.image_alias = new Array();
-	Preloader.import_src = new Array();
+		
+	PreloadList.image_src = [];   // array of strings(image names)
+	PreloadList.image_alias = []; // array of strings(image aliases)
+	PreloadList.import_src = [];
+	PreloadList.import_alias = []; 	
 	
 	modules = {};
 	

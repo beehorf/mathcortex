@@ -43,11 +43,9 @@ var asm_reg1_real = 0;
 
 //frame/base pointer(bp)
 var asm_bp = 0;
-var __ans;
 
 function asm_init(heap)
 {
-	__ans = undefined;
 	asm_sp = 0;
 	asm_bp = 0;
 	

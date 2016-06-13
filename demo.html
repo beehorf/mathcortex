@@ -14,10 +14,10 @@
 </body>
 
 <script>
-  cortexParser.compile('M  = [2.655,  0.3959, 2.044;      0.9232, 3.959,  1.681;      2.488,  2.897,  1.076]; [u s d] = svd(M);');
+  cortexParser.compile('M  = [2.655,  0.3959, 2.044;      0.9232, 3.959,  1.681;      2.488,  2.897,  1.076]; [u s d] = svd(M); s');
   cortex.execute(cortexParser.getCompiledCode());
   
-  document.getElementById("result").innerHTML = cortex.getVarVal('s', cortexParser) ;
+  document.getElementById("result").innerHTML = cortex.__ans;
 </script>
 
 

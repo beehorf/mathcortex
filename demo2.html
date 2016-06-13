@@ -30,7 +30,7 @@ M  = [2.655,  0.3959, 2.044;
   code = cortexParser.getCompiledCode()
   cortex.execute(code);
   
-  document.getElementById("result").innerHTML = cortex.getVarVal('s', cortexParser) ;
+  document.getElementById("result").innerHTML = cortex.heap[code.symbols["s"]] ;
   document.getElementById("code_gen").innerHTML = code.code;
   
 </script>

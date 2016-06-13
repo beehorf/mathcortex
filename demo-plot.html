@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+
+<script src="cortex_parser.js"></script>
+<script src="numeric-1.2.6.min.js"></script>
+<script src="cortex_runtime.js"></script>
+
+<script src="../lib/jquery-1.6.4.min.js"></script>
+<script src="../js/plot_include.js"></script> 
+<script src="../lib/flot/jquery.flot.js"></script>
+<script src="../lib/flot/jquery.flot.selection.js"></script>
+<script src="../lib/flot/jquery.flot.resize.js"></script>
+<script src="../lib/flot/jquery.flot.symbol.js"></script>
+
+</head>
+<body>
+<div id="div_plot" style="width:400px;height:400px" ></div>
+</body>
+
+<script>
+  cortexParser.compile('y = [0,1,0,2,0,3]; plot(y);');
+  cortex.plotTarget = "div_plot";
+  cortex.execute(cortexParser.getCompiledCode());
+  
+</script>
+
+
+</html>

@@ -26,10 +26,10 @@ var test_num;
 function test_report(result, expected, test_name)
 {
 	if (result == expected)
-		test_results += "test " + test_num + ": '" + expected + "' success.\n"; 
+		test_results += "[Success] test " + test_num + ": '" + expected + "'\n"; 
 	else
 	{
-		test_results += "<span style='color:red' >" + "test " + test_num + ":  !!!FAILED!!!! <br> expected : '" + expected + "' , result : '" + result + "'<br> '" + test_name + "'</span>\n"; 
+		test_results += "<span style='color:red' >" + "[FAILED] test " + test_num + ":<br>Expression:<br>	" + test_name +  "<br>Expected:<br>	'" + expected + "'<br>Result:<br>	'" + result + "'</span>\n"; 
 		test_any_fail = true;
 	}
 }
@@ -40,13 +40,33 @@ function test_report_mat(result, expected, test_name)
 {
 	//if (result.eql(expected))
 	if (cortex.matrixsame(result, expected))
-		test_results += "test " + test_num + ": success.\n";//"'== " + expected + " success.\n"; 
+		test_results += "[Success] test " + test_num + "\n";//"'== " + expected + " success.\n"; 
 	else
 	{
 		//test_results += "'<span style='color:red' > != " + cortex.matrix_print(expected, 0,0, true) + " !!!FAILED!!!!. result : '" + cortex.matrix_print(result, 0,0, true) + "'</span>\n"; 
-		test_results += "<span style='color:red' >" + "test " + test_num + ":  !!!FAILED!!!! <br>expected :<br>" + cortex.matrix_print(expected, 0,0, true) + "<br>result :<br>" + cortex.matrix_print(result, 0,0, true) + "<br>'" + test_name + "'</span>\n"; 
+		test_results += "<span style='color:red' >" + "[FAILED] test " + test_num + ":<br>Expected:<br>	" + cortex.matrix_print(expected, 0,0, true) + "<br>Result:<br>	" + cortex.matrix_print(result, 0,0, true) + "<br>Expression:<br>	'" + test_name + "'</span>\n"; 
 		test_any_fail = true;
 	}
+}
+
+function test_error(expr, result)
+{
+	var err_target = cortexParser.printError;
+	
+	var err_msg;
+	cortexParser.printError = function(s){ err_msg = s};
+	
+	if (cortexParser.compile(expr))
+	{
+		cortex.print("!!!FAILED!!!! Not a valid error: "+ expr);
+		test_any_fail = true;
+		cortexParser.printError = err_target;
+		return;
+	}
+	
+	test_num++;
+	test_report(err_msg, result , expr);
+	cortexParser.printError = err_target;
 }
 
 function test_exec(expr, result)
@@ -67,10 +87,10 @@ function test_exec(expr, result)
 	
 	test_num++;
 	
-	if(cortexParser.isLastExpressionReal())
-		test_report(__ans, result , expr);
-	else
-		test_report(__ans, result , expr);
+	/*if(cortexParser.isLastExpressionReal())
+		test_report(cortex.__ans, result , expr);
+	else*/
+	test_report(cortex.__ans, result , expr);
 }
 
 function test_exec_mat(expr, result)
@@ -91,7 +111,7 @@ function test_exec_mat(expr, result)
 	}
 	
 	test_num++;
-	test_report_mat(__ans, result , expr);
+	test_report_mat(cortex.__ans, result , expr);
 }
 
 function do_tests()
@@ -101,6 +121,9 @@ function do_tests()
 		test_results = "";
 		test_any_fail = false;
 		test_num = 0;
+		
+		test_error('xyz',"Undefined variable : 'xyz'.");
+		test_error('4r',"';' expected");
 		
 		test_exec("2==2", true);
 		test_exec("t=true&&true;t", true);
@@ -165,6 +188,7 @@ function do_tests()
 		test_exec_mat( "t=eye(3);  t[0,1] = -3*2;0+t", [[1, -6, 0], [ 0, 1, 0] , [ 0, 0, 1] ] );
 		test_exec_mat( "t=zeros(2,2);t[1,0] = -3*2;0+t",[[0, 0], [ -6, 0]] );
 		test_exec_mat( "zeros(2,4)",[[0, 0, 0, 0], [ 0, 0, 0, 0]] );
+		test_exec_mat( "ones(1,2)",[[1,1]] );
 		test_exec_mat( "eye(3)",[[1, 0, 0], [ 0, 1, 0] , [ 0, 0, 1]]  );
 		test_exec_mat( "+[1,2;3,4]", [[1,2],  [3,4]] );
 		test_exec_mat( "2*[1,2;3,4]",[  [2,4],  [6,8]] );
@@ -191,6 +215,9 @@ function do_tests()
 		test_exec_mat( "M = [2.276789346244186, 0.36876537348143756, 0.45080351759679615, 0.34839300904423, 2.226159736281261; 0.42500006267800927, 2.0114856229629368, 1.307754920097068, 1.9121849241200835, 1.9878224346321076; 0.5171949409414083, 1.4852598016150296, 0.5614477365743369, 1.493025004165247, 1.6660545710474253; 0.43050497816875577, 2.8250119413714856, 2.7469056753907353, 0.06255048047751188, 0.19471221417188644; 1.2185607792343944, 1.4983534910716116, 1.0756771531887352, 0.924582748208195, 0.6864324007183313];\
 		[l v] = eig(M);v1 = [v[0,0], v[1,0], v[2,0], v[3,0], v[4,0]];l1 = l[0,0];+M*trans(v1) - l1*trans(v1);", [ [0],[0 ],[0 ],[0 ],[0 ]] );
 		test_exec_mat( "M = 0.1*[5, -6 1; 2 , 4 0; 0,5, 6]; b = [-1; 2; 3];x = linsolve(M,b); +M*x-b;", [ [0], [0], [0] ]);
+		test_exec( "sig = sin(1+2*linspace( 0,10*6.28,10) );[re im] = fft(sig);re == [ 0.7919247636946962 , 1.015436615265858 , 4.749581786108819 , -1.1742375600231585 , -0.5524261746730765 , -0.453924248972608 , -0.5524261746730794 , -1.1742375600231576 , 4.749581786108817 , 1.0154366152658565 ];", true);
+		test_exec( "sig = sin(1+2*linspace( 0,10*6.28,10) );[re im] = fft(sig, ones(1,10));im == [ 10 , 0.0528396236751395 , 0.41841988159412913 , -0.10972753137015853 , -0.03355242323255467 , 2.525561039460458e-15 , 0.03355242323255295 , 0.10972753137015628 , -0.4184198815941276 , -0.052839623675139114 ];", true);
+		
 		test_exec("M = [    1    1    1    1    1;    1    2    3    4    5;    1    3    6   10   15;    1    4   10   20   35;    1    5   15   35   70  ]; L =cholesky(M);err = sum(abs(L*L'-M));", 0);
 		test_exec( "[x y] = lu(eye(3)+1);y ==[ 0 1 2] && x == [ 2 , 1 , 1 ; 0.5 , 1.5 , 0.5 ; 0.5 , 0.3333333333333333 , 1.3333333333333333 ];", true);
 		
@@ -218,6 +245,8 @@ function do_tests()
 		test_exec_mat("t = [1,3,11,2;2,4,3, 4; 5, 7 6,2];t[2:-1,2:-1] = t[2:-1,1:-2]+45;",[[ 1 ,  3 ,  11,  2],[  2,  4,  3,  4],[  5,  7,  52,  51]]);
 		
 		test_exec_mat("t = [1,3,11,2;2,4,3, 4; 5, 7 6,2];t[2:-1,2:-1] = t[2:-1,1:-2]+45;",[[ 1 ,  3 ,  11,  2],[  2,  4,  3,  4],[  5,  7,  52,  51]]);
+		test_exec_mat("t = ones(4,3); t[:,1] = zeros(4,1);+t;",[ [1,0,1], [1,0,1], [1,0,1] , [1,0,1]]);
+		test_exec_mat("t = ones(4,3); t[1:3,1:2] = zeros(3,2);+t;",[ [1,1,1], [1,0,0], [1,0,0] , [1,0,0]]);
 		
 		test_exec("([2 -2;1 -2] != @[2 -2;1 -2])", true);
 		
@@ -232,6 +261,7 @@ function do_tests()
 		test_exec_mat("t = 45; loop(i,44,101){ t=t+1;}; +[i,t]",[[101, 102]]);
 		
 		test_exec_mat("t = 12; i = 0; while(i < 201){ t=t+1;i=i+1;}; +[i,t]",[[201, 213]]);
+		test_exec_mat("t = -6; i = 0; while(i < 200){ i++; if(i>20) break;}; +[i,t]",[[21, -6]]);
 		
 		test_exec("	clear all;c=0;function f(d){      c = c+d;      return 0; };  \
 					loop0(i,6) {     f(i); }; +c; ", 15);
@@ -297,7 +327,7 @@ function do_tests()
 	cortex.print(">> " + test_results);
 	if (test_any_fail)
 	{
-		cortex.print("There are failed tests!!!");
+		cortex.print("<span style='color:red' >There are failed tests!!!</span>");
 		update_editor();
 		return 1;
 	}

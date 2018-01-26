@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2012-2016 Gorkem Gencay. 
+Copyright (c) 2012-2015 Gorkem Gencay. 
 
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -30,23 +30,15 @@ THE SOFTWARE.
 
 var cortex = function() { };
 
-cortex.print = cortex.print_error = function(s){
+cortex.print = cortex.print_error = cortex.print_run_error = function(s){
 	console.log(s)
 };
-
-cortex.print_run_error = function(err){
-	console.log(err.message)
-};
-
 cortex.disp_options = function(opts)
 {
 	opts.style = 0;
 	opts.format = true;
 }
-
-//we can not load images and run the code in one call in browsers. 
-//we have to load all images and other resources before excuting main code. 
-//if preloading is needed, after all images loaded, cortex.execute_aux will be called
+//if preloading it is an async function that will wait loading images than will call asm_end_func
 //image loading in browsers cant be synchronous
 cortex.execute = function ( code, onfinish, AsynLoad)
 {
@@ -77,27 +69,32 @@ cortex.execute = function ( code, onfinish, AsynLoad)
 
 cortex.execute_aux = function(code, AsynLoad)
 {
-	var asm_vm = (typeof asm_init !== 'undefined');
+	var asm_module = (typeof asm_init !== 'undefined');
 	
 	try
 	{	
-		if (asm_vm)
+		if (asm_module)
 			asm_init(cortex.heap);
 			
 		cortex.__ans = undefined;
 		
 		//(new Function("var ticTime = new Date();" + compiled_js_test + ";alert(sp + '  ' + ((new Date())- ticTime))"))();		
-		(new Function(code))();  // this is actually : 'eval(code);' , alternative(which is also faster than raw eval) : eval.call(null, code);
+		(new Function(code))();				
+			//throw "Invalid pragma option 'execute' : " + cortexParser.options["execute"];
+		
+		//(new Function(compiled_js))();  // this is actually : 'eval(compiled_js);' , alternative(which is also faster than raw eval) : eval.call(null, compiled_js);
 				
-		if (asm_vm && asm_sp != 0 && cortex.print)
+		if (asm_module && asm_sp != 0 && cortex.print)
 			cortex.print("Warning: stack not cleared properly : " + asm_sp + "  " + asm_sp);
 	}
    	catch(err)
 	{
 		if(!cortex.print_run_error)
 			throw err;
-		
-		cortex.print_run_error(err);
+		if ( err.message)
+			cortex.print_run_error(err.message);
+		else
+			cortex.print_run_error(err);
 			
 		return false;
 	}
@@ -112,12 +109,10 @@ cortex.__ans = undefined;
 cortex.ticTime = 0;
 var tableVar = {};
 var imageVar = new Array;
-cortex.animTimer = -1;
 
+var plotVar = new Array;
 
 var openFigures = new Array;
-
-cortex.plotTarget = undefined; 
 
 cortex.getVarVal = function(name, Parser)
 {		
@@ -125,7 +120,7 @@ cortex.getVarVal = function(name, Parser)
 }
 
 
-cortex.create = function(m, n)
+cortex.create = function(m,n)
 {
 	var L = new Array(m);
 	
@@ -139,13 +134,6 @@ cortex.create = function(m, n)
 	}
 	
 	return L;
-}
-
-cortex.rep = function(size, val)
-{
-	if(size[0] < 1 || size[1] < 1)
-		cortex.error_run("Matrix size should be more than 1x1");
-	return numeric.rep(size, val);
 }
 
 cortex.createinit = function(m,n,func)
@@ -186,8 +174,8 @@ cortex.getslice = function(m, row_b, row_e, col_b, col_e)
 	if (col_e < 0) col_e += m[0].length;
 	if (col_b < 0) col_b += m[0].length;
 
-	cortex.matrix_boundary_check(m, row_b, col_b);
-	cortex.matrix_boundary_check(m, row_e, col_e);
+	asm_util_matrix_boundary_check(m, row_b, col_b);
+	asm_util_matrix_boundary_check(m, row_e, col_e);
 	
 	return numeric.getBlock(m, [row_b, col_b], [row_e, col_e]);
 }
@@ -198,8 +186,8 @@ cortex.getcol = function(m, row_b, row_e, col)
 	if (row_b < 0) row_b += m.length;
 	if (col < 0) col += m[0].length;
 
-	cortex.matrix_boundary_check(m, row_b, col);
-	cortex.matrix_boundary_check(m, row_e, col);
+	asm_util_matrix_boundary_check(m, row_b, col);
+	asm_util_matrix_boundary_check(m, row_e, col);
 	
 	return numeric.getBlock(m, [row_b, col], [row_e,col]);
 }
@@ -210,8 +198,8 @@ cortex.getrow = function(m, row, col_b, col_e)
 	if (col_e < 0) col_e += m[0].length;
 	if (col_b < 0) col_b += m[0].length;
 
-	cortex.matrix_boundary_check(m, row, col_b);
-	cortex.matrix_boundary_check(m, row, col_e);
+	asm_util_matrix_boundary_check(m, row, col_b);
+	asm_util_matrix_boundary_check(m, row, col_e);
 	
 	return numeric.getBlock(m, [row, col_b], [row, col_e]);
 }
@@ -222,13 +210,9 @@ cortex.setslice = function(m, row_b, row_e, col_b, col_e, source)
 	if (row_b < 0) row_b += m.length;
 	if (col_e < 0) col_e += m[0].length;
 	if (col_b < 0) col_b += m[0].length;
-	if (source.length != row_e - row_b + 1)
-		cortex.error_run('Matrix row size mismatch: ' + (source.length) + ' !=  ' + (row_e - row_b + 1) );
-	if (source[0].length != col_e - col_b + 1)
-		cortex.error_run('Matrix column size mismatch: ' + (source[0].length) + ' != ' + (col_e - col_b + 1) );
 
-	cortex.matrix_boundary_check(m, row_b, col_b);
-	cortex.matrix_boundary_check(m, row_e, col_e);
+	asm_util_matrix_boundary_check(m, row_b, col_b);
+	asm_util_matrix_boundary_check(m, row_e, col_e);
 	
 	return numeric.setBlock(m, [row_b, col_b], [row_e, col_e], source);
 }
@@ -238,13 +222,9 @@ cortex.setcol = function(m, row_b, row_e, col, source)
 	if (row_e < 0) row_e += m.length;
 	if (row_b < 0) row_b += m.length;
 	if (col < 0) col += m[0].length;	
-	if (source.length != row_e - row_b + 1)
-		cortex.error_run('Matrix row size mismatch: ' + (source.length) + " != " + (row_e - row_b + 1) );
-	if (source[0].length != 1)
-		cortex.error_run('Matrix column size mismatch: ' + (source[0].length) + " != 1" );
-
-	cortex.matrix_boundary_check(m, row_b,col);
-	cortex.matrix_boundary_check(m, row_e, col);
+	
+	asm_util_matrix_boundary_check(m, row_b,col);
+	asm_util_matrix_boundary_check(m, row_e, col);
 	
 	return numeric.setBlock(m, [row_b, col], [row_e, col], source);
 }
@@ -254,23 +234,11 @@ cortex.setrow = function(m, row, col_b, col_e, source)
 	if (row < 0) row += m.length;
 	if (col_e < 0) col_e += m[0].length;
 	if (col_b < 0) col_b += m[0].length;
-	if (source[0].length != col_e - col_b + 1)
-		cortex.error_run('Matrix column size mismatch: ' + (source[0].length) + ' != ' + (col_e - col_b + 1));
-	if (source.length != 1)
-		cortex.error_run('Matrix row size mismatch: ' + source.length + ' != 1');
 
-	cortex.matrix_boundary_check(m, row, col_b);
-	cortex.matrix_boundary_check(m, row, col_e);
+	asm_util_matrix_boundary_check(m, row, col_b);
+	asm_util_matrix_boundary_check(m, row, col_e);
 	
 	return numeric.setBlock(m, [row, col_b], [row, col_e], source);
-}
-
-cortex.matrix_boundary_check = function(M, i, j)
-{
-	if (i>=M.length || j>= M[0].length || j<0 || i<0)
-	{
-		cortex.error_run('Index out of bounds.');
-	}
 }
 
 cortex.eig = function(M)
@@ -643,8 +611,8 @@ function closeFigures(nameid)
 		{
 			for(var i = 0 ; i < openFigures.length ; i++)
 			{
-				if (openFigures[i] != "_closed")
-					removePlot(openFigures[i]);//openFigures[i].close();
+				if (!openFigures[i].closed)
+					openFigures[i].close();
 			}
 
 			openFigures = new Array();
@@ -656,60 +624,18 @@ function closeFigures(nameid)
 	}
 	else if (typeof(nameid) == 'number')
 	{
-		if (nameid < openFigures.length && openFigures[nameid] != "_closed")
+		if (nameid < openFigures.length && !openFigures[nameid].closed)
 		{
-			removePlot(openFigures[nameid]);//openFigures[nameid].close();
-			openFigures[nameid] = "_closed";
+			openFigures[nameid].close();
 		}
 		else
 		{
-			cortex.error_run("close : invalid figure handle")
+			cortex.Error_run("close : invalid figure handle")
 		}
 	}
 }
 
-function removePlot(id)
-{
-	$('#'+id).hide( function() {
-		document.getElementById("plot_cont").removeChild(document.getElementById(id));
-	}
-	);
-}
-
-function addPlot(ind, ifrm_id, width, height)
-{
-	var ifrm = document.createElement("iframe");
-	document.getElementById("plot_cont").insertBefore(ifrm, document.getElementById("plot_cont").firstChild);
-	ifrm.setAttribute("id", ifrm_id);
-	ifrm.setAttribute("style", "width:" + width + "px;height:" + height + "px;background-color:#ffffff;border:1px solid #CCC;margin:5px;visibility:visible;box-shadow: 3px 3px 5px 0px #AAA;max-width:90%");	
-	ifrm.maxWidth = width; // 480, 430
-	ifrm.maxHeight = height;
-	
-	return ifrm;
-}
-
-function togglePlot(id)
-{
-	var ifrm = $("#" + id);
-	var h = ifrm.css('height'); 
-	
-	if(h == '50px')
-	{
-		ifrm.css('height', ifrm[0].maxHeight + 'px');
-		ifrm.css('width',  ifrm[0].maxWidth + 'px');
-		return true;
-	}
-	else
-	{
-		ifrm.css('height', '50px');
-		ifrm.css('width', '250px');
-		return false;
-	}
-}
-
-var iframe_ind = 0;
-
-function plotArray(mat, mat2, opts, mat21, mat22, opts2, test1)
+function plotArray(mat, mat2, opts, mat21, mat22, opts2)
 {
 	var arrY, arrX;
 	var arrY2, arrX2;
@@ -744,52 +670,33 @@ function plotArray(mat, mat2, opts, mat21, mat22, opts2, test1)
 	}
 
 
-	var plotD = {};
-	var ind = iframe_ind++;
+	plotVar.push(new Array());
+	var ind = plotVar.length - 1;
 
 	if(mat21)
 	{
-		plotD.data2 = new Array();
+		plotVar[ind].data2 = new Array();
 		for (var i=0; i< arrY.length;i++)
 		{
-			plotD.data2[i] = [arrX2 ? arrX2[i] : i , arrY2[i]];
+			plotVar[ind].data2[i] = [arrX2 ? arrX2[i] : i , arrY2[i]];
 		}
 		
-		plotD.opts2 = opts2;
+		plotVar[ind].opts2 = opts2;
 	}
 	
-	plotD.data1 = new Array();
+	plotVar[ind].data1 = new Array();
 	for (var i=0; i< arrY.length;i++)
 	{
-		plotD.data1[i] = [arrX ? arrX[i] : i , arrY[i]];
+		plotVar[ind].data1[i] = [arrX ? arrX[i] : i , arrY[i]];
 	}
 	
-	plotD.opts = opts;
+	plotVar[ind].opts = opts;
 	
-	if( cortex.plotTarget == undefined)
-	{
-		var ifrm_id = "plot_test_iframe" + ind;
-		var ifrm = addPlot(ind, ifrm_id, 480, 430);	
-		
-		ifrm.onload = function()
-		{
-			this.contentWindow.update_data(plotD);
-			this.contentWindow.close_clb = removePlot;
-			this.contentWindow.toggle_clb = togglePlot;
-			this.contentWindow.clb_params = ifrm_id;
-		};
-		
-		ifrm.src = "html/plot.html#"+ind;
-		if (ifrm.contentWindow.update_data)
-			ifrm.contentWindow.update_data(plotD);
-			
-		return openFigures.push(ifrm_id) - 1;
-	}
-	else 
-		plot_init(plotD);
-	
-	return -1;
-	
+
+
+	var PlotWindow = window.open("html/plot.html#"+ind, "_blank", "resizable=yes,scrollbars=yes,status=yes,height=400, width=520");
+
+	return openFigures.push(PlotWindow) - 1;
 }
 
 function tableviewArray(arr, varname, format, style)
@@ -799,139 +706,46 @@ function tableviewArray(arr, varname, format, style)
 }
 
 
-cortex.startAnim = function(updateFunc, interval)
-{
-	$("#anim_area").fadeIn('fast');
-	cortex.stopAnim();
-	
-	cortex.animTimer = setInterval( function() { 
-				try { 
-					updateFunc(-1);
-					if (false)	{
-						clearInterval(cortex.animTimer);		
-						cortex.print('Animation is stopped');
-						update_editor(); 
-					} 
-				} 
-				catch(err) 
-				{ 
-					clearInterval(cortex.animTimer); 
-					cortex.print_run_error(err.message); 
-				}		
-			}, 
-			interval);
-			
-	cortex.print("Animation is started. ");
-}
-
-cortex.animSize = function(w, h)
-{
-	$('#anim_canvas').css('width','' + w);
-	$('#anim_canvas').css('height','' + h);
-}
-
-cortex.stopAnim = function()
-{
-	if(cortex.animTimer != -1)
-	{
-		clearInterval(cortex.animTimer);
-		cortex.print('Animation is stopped');
-	}
-	
-	cortex.animTimer = -1;
-}
-
-cortex.updateAnim = function(id, m1, m2, m3)
-{
-	var _setPixelIm;
-	var canvas = document.getElementById("anim_canvas");
-	var _simContex = canvas.getContext("2d");
-	
-	if(m2 === undefined)
-		m2 = m1;
-	if(m3 === undefined)
-		m3 = m1;
-	
-	if(canvas.width <= 0 || canvas.width != m1[0].length || canvas.height != m1.length)
-	{
-		canvas.width = m1[0].length;
-		canvas.height = m1.length;
-		
-		_setPixelIm = _simContex.createImageData(canvas.width, canvas.height);		
-	}
-	else
-	{
-		_setPixelIm = _simContex.getImageData(0,0,canvas.width, canvas.height);
-	}
-	
-	var _setPixelData  = _setPixelIm.data;
-	
-	var height = m1[0].length;
-	var width = m1.length;
-	var pos = 0;
-	
-	for (var y = 0; y < height; y++)
-	{
-		for (var x = 0; x < width; x++)
-		{
-			// set red, green, blue, and alpha:
-			_setPixelData[pos++] = Math.max(0,Math.min(255, m1[y][x]));
-			_setPixelData[pos++] = Math.max(0,Math.min(255, m2[y][x]));
-			_setPixelData[pos++] = Math.max(0,Math.min(255, m3[y][x]));
-			_setPixelData[pos++] = 255; // opaque alpha
-		}
-	}
-	
-	_simContex.putImageData(_setPixelIm, 0, 0); // at coords 0,0
-}
-
 function showImage(m1, m2, m3)
 {
-	var imageD = {};
 	if (m2 !== undefined)
-		imageD = {R : m1, G : m2, B : m3} ;
+		imageVar.push( {R : m1, G : m2, B : m3} );
 	else
-		imageD = {R : m1, G : m1, B : m1} ;
+		imageVar.push( {R : m1, G : m1, B : m1} );
 
-	var ind = iframe_ind++;
-	var winW = (imageD.R[0].length < 200 ? 200 : imageD.R[0].length) + 40;
-	var winH = (imageD.R.length < 200 ? 200 : imageD.R.length) + 95;
-		
-	//var tableWindow=window.open("html/image.html#" + i, "_blank", "resizable=yes,scrollbars=yes,status=no, width=" + winW + ", height=" + winH);
-	var ifrm_id = "plot_test_iframe" + ind;
-	var ifrm = addPlot(ind, ifrm_id, winW, winH);
-	ifrm.onload = function()
-	{
-		this.contentWindow.generateImage(imageD);
-		this.contentWindow.close_clb = removePlot;
-		this.contentWindow.toggle_clb = togglePlot;
-		this.contentWindow.clb_params = ifrm_id;
-	};
-	
-	ifrm.src = "html/image.html#" + ind;
-	if (ifrm.contentWindow.generateImage)
-		ifrm.contentWindow.generateImage(imageD);
+	var i = imageVar.length-1;
+	var winW = (imageVar[i].R[0].length < 200 ? 200 : imageVar[i].R[0].length) + 60;
+	var winH = (imageVar[i].R.length < 200 ? 200 : imageVar[i].R.length) + 65;
+	var tableWindow=window.open("html/image.html#" + i, "_blank", "resizable=yes,scrollbars=yes,status=no, width=" + winW + ", height=" + winH);
 
-	return openFigures.push(ifrm_id) - 1;
+	return openFigures.push(tableWindow) - 1;
 }
 
-function updateTitle(id, title)
+function updateImage(id, m1, m2, m3)
 {
-	if(id === undefined)
-		id = iframe_ind-1;
-	if(id < 0 || id >= iframe_ind || openFigures[id] === '_closed')
-		cortex.error_run("Invalid handle for title '" + id + "'");
+	var imageVar;
 	
-	var plot_win = $('#plot_test_iframe' + id)[0].contentWindow;
-	if (plot_win.update_title)
-		plot_win.update_title(title);
+	if (m2 !== undefined)
+		imageVar = {R : m1, G : m2, B : m3};
 	else
+		imageVar = {R : m1, G : m1, B : m1};
+
+	if(openFigures[id].document.readyState === "complete")
 	{
-		$('#plot_test_iframe' + id).load( function() { 
-			plot_win.update_title(title);
-		});
+		if (!openFigures[id].resized_once)
+		{
+			var winW = (imageVar.R[0].length < 200 ? 200: imageVar.R[0].length) + 145;
+			var winH = (imageVar.R.length < 200 ? 200 : imageVar.R.length)  + 50;
+			
+			openFigures[id].resized_once = true;
+			openFigures[id].resizeTo(winH, winW);
+		}
+		
+		if(openFigures[id].generateImage)
+			openFigures[id].generateImage(imageVar);
 	}
 }
+
 
 function resourcePreload(code, AsyncLoad)
 {

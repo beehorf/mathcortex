@@ -6,7 +6,7 @@ MathCortex is a simple lightweight programming language that is designed for doi
 Start using Mathcortex at http://mathcortex.com/. 
 No installation or setup required.
 
-###Main features are:
+### Main features are:
 - Easy matrix manipulation and built-in matrix operations
 - Sophisticated numerical computations like singular value decomposition(**svd**) and finding eigenvalues/vectors(**eig**)
 - Implicit declarations
@@ -28,7 +28,7 @@ Language is still being developed.
 Examples
 -
 
-###Linear system of equations
+### Linear system of equations
 ```javascript
 
 A = [5,-6, 1;
@@ -42,7 +42,7 @@ x = linsolve(A, b);
 disp(A * x - b);
 ```
 
-###Singular value decomposition
+### Singular value decomposition
 ```javascript
 
 M  = [2.655,  0.3959, 2.044;
@@ -55,7 +55,7 @@ disp(M - u * diag(s) * trans(v));
 
 ```
 
-###Eigenvalues/vectors
+### Eigenvalues/vectors
 ```javascript
 
 M  = [2.655,  0.3959, 2.044;
@@ -75,7 +75,7 @@ disp(M * v3 - l[2] * v3);
 
 ```
 
-###Plot
+### Plot
 ```javascript
 
 x = zeros(37, 1);
@@ -90,7 +90,7 @@ plot(x, y);
 
 ```
 
-###Functions
+### Functions
 ```javascript
 
 ///// simple function example

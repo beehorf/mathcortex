@@ -130,19 +130,24 @@ You can integrate mathcortex to your site
 <head>
 
 <script src="cortex_parser.js"></script>
-<script src="cortex_asm_vm.js"></script>
 <script src="numeric-1.2.6.min.js"></script>
 <script src="cortex_runtime.js"></script>
 
-<script>
-  cortexParser.compile('M  = [2.655,  0.3959, 2.044;      0.9232, 3.959,  1.681;      2.488,  2.897,  1.076]; [u s d] = svd(M);');
-  cortexParser.executeJS();
-  alert( cortexParser.getGlobalScope().get_var_value('u') );
-</script>
 
 </head>
 <body>
-
+<span id="result">
+</span>
 </body>
+
+<script>
+  cortexParser.compile('M  = [2.655,  0.3959, 2.044;      0.9232, 3.959,  1.681;      2.488,  2.897,  1.076]; [u s d] = svd(M);');
+  code = cortexParser.getCompiledCode();
+  cortex.execute(code);
+  
+  document.getElementById("result").innerHTML = cortex.heap[code.symbols["s"]] ;;
+</script>
+
+
 </html>
 ```

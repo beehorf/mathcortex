@@ -1,7 +1,7 @@
 /*
 Compiler for MathCortex language
 
-Copyright (c) 2012-2015 Gorkem Gencay. 
+Copyright (c) 2012-2016 Gorkem Gencay. 
 
 MathCortex Compiler is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -21,15 +21,8 @@ along with MathCortex Compiler. If not, see <http://www.gnu.org/licenses/>.
 
 (function( cortexParser, undefined ) {
 
-cortexParser.compile = function(code_inp, namespace)
+cortexParser.compile = function(code_inp)
 {
-	/*ImportAsyncLoad(code_inp, namespace);
-	
-	if (namespace !== undefined)
-		cortexParser.namespace = namespace;
-	else
-		cortexParser.namespace = "global";*/
-		
 	return cortexParser.compile_aux(code_inp);
 }
 
@@ -40,18 +33,17 @@ cortexParser.compile_aux = function(code_inp)
 		Init(code_inp);
 		
 		Program();
-		compiled_asm += '\n/// Functions ///\n\n' + functions_asm + ftable_function();
-		compiled_js_test +=  "\n" + export_global_scope() + '\n/// Functions ///\n\n' + functions_js_test + ftable_function(true);
-		
+		compiled_js +=  "\n" + export_global_scope() + '\n/// Functions ///\n\n' + functions_js + ftable_function(true);
+		compiled_c +=  "\n" + export_global_scope() + '\n/// Functions ///\n\n' + functions_c + ftable_function(true);		
 	}
 	catch(err)
 	{
-		compiled_asm = "";
-		compiled_js_test = "";
+		compiled_c = "";
+		compiled_js = "";
 		
 		if(cortexParser.printError)
 			cortexParser.printError(err.message);
-		else	
+		else
 			throw(err);
 		
 		return false;
@@ -76,25 +68,36 @@ cortexParser.getCompiledCode = function()
 {
 	if(cortexParser.options["execute"] == "JS")
 		return {"code" : cortexParser.getCompiledJS(), "resources" : PreloadList, "symbols" : global_scope.vars_rel_pos};
-	else if(cortexParser.options["execute"] == "ASM")
-		return {"code" : cortexParser.getCompiledASM(), "resources" : PreloadList, "symbols" : global_scope.vars_rel_pos};
+	else if(cortexParser.options["execute"] == "C")
+		return {"code" : cortexParser.getCompiledC(), "resources" : PreloadList, "symbols" : global_scope.vars_rel_pos};
 	
 	return {"code":"", "resources" : null};
 };
 
 cortexParser.getCompiledJS = function()
 {
-	return compiled_js_test;
-};
+	return compiled_js;
+}
 
-cortexParser.getCompiledASM = function()
+cortexParser.getCompiledC = function()
 {
-	return compiled_asm;
-};
+	return compiled_c;
+}
+
 
 cortexParser.getGlobalScope = function()
 {
 	return global_scope;
+};
+
+cortexParser.getSymbols = function()
+{
+	return global_scope.vars_rel_pos;
+};
+
+cortexParser.defineVar = function(varname, type)
+{
+	comp_define_var(varname, type);
 };
 
 cortexParser.isLastExpressionReal = function()
@@ -102,20 +105,23 @@ cortexParser.isLastExpressionReal = function()
 	return comp_type_is_real(last_expression_type);
 };
 
+
 cortexParser.clearAll = comp_clear_all;
 cortexParser.clearVar = comp_clear_var;
 cortexParser.functionList = [];
 
-var types = [ "reserved", 
+var type_names = [ "reserved", 
 			  "bool" /* 1 */, 
 			  "real" /* 2 */, 
 			  "matrix" /* 3 */, 
 			  "string", /* 4 */
 			  "function" /* 5 */ , 
 			  "functionptr" /* 6 */,  
-			  "void" /* 7 */, 
-			  "struct" /*8*/ ];
-
+			  "void" /* 7 */ ,
+			  "method" /* 8 */,
+			  "module" /* 9 */];
+			  
+cortexParser.type_names = type_names;
 
 var Look;
 
@@ -123,12 +129,13 @@ var inp;
 var inp_pos;
 	
 var end_of_prog = false;
+var cur_indent = 0;
 
-var compiled_asm = "";
-var functions_asm = "";
+var compiled_js = "";
+var functions_js = "";
 
-var compiled_js_test = "";
-var functions_js_test = "";
+var compiled_c = "";
+var functions_c = "";
 
 //////////////
 var cur_scope; 
@@ -136,7 +143,12 @@ var cur_scope;
 var scope_stack = new Array();
 var user_func_codes = new Array();
 var report_pos = 0; // used for error reporting only
-var last_success_pos = 0; // used for error reporting only
+var current_module_name = ""; // used for error reporting only
+cortexParser.current_module_name_link = ""; // used for error reporting only
+cortexParser.current_function_name = ""; // used for error reporting only
+
+var cur_module;
+//var module_stack = new Array();
 
 var global_scope = new VariableScope(true);
 
@@ -151,7 +163,7 @@ var rvalue_pos = 0;
 
 var keywords = ["bool", "real", "matrix", "string", "function", "functionptr", "void", "else", "if", "clear", 
 				"function", "while", "loop0", "loop", "switch", "for", "do", "const", "enum", "class", "struct", "break", 
-				"continue", "default", "pragma", "preload", "import", "namespace", "as", "return"];
+				"continue", "default", "pragma", "preload", "import", "namespace", "as", "return", "var", "global", "module"];
 
 
 
@@ -163,6 +175,10 @@ var ast_postfix = new Array();
 var anim_count = 0;
 var func_uid;
 var func_gen_names;
+var anonymous_uid;
+
+var ObjectList = new Array( 
+);
 
 var PreloadList = {};
 
@@ -207,7 +223,7 @@ function ast_from_postfix()
 		}
 		
 		infinite++;
-		if(infinite>100000) 
+		if(infinite>500000) 
 			Error_parse("Internal error: infinite ast_from_postfix");
 	}
 	
@@ -219,7 +235,7 @@ function ast_from_postfix()
 function ast_generate_js(ast_node)
 {	
 	var op_func_map = { '+' : 'numeric.add' , '*' : 'numeric.mul' , '/' : 'numeric.div', '-' : 'numeric.sub', '==' : 'cortex.matrixsame', '!=' : '!cortex.matrixsame', '<=' : 'leq', '>=' : 'geq', '<' : 'le', '>' : 'ge', 
-					'.*' : 'cortex.elm_mul', './' : 'cortex.elm_div'};
+					'.*' : 'cortex.elm_mul', './' : 'cortex.elm_div', '%' : 'numeric.mod'};
 	var type_func_map = { 2 : 'r', 3 : 'm', 4: 's'};
 	
 	var js_code = "";
@@ -240,10 +256,12 @@ function ast_generate_js(ast_node)
 	}	
 	else if(ast_node.op == '=')
 	{
+		/*if( cortexParser.isObject(ast_node.nodes[0].type) && !ast_node.nodes[0].opts.ctor ) 
+			Error_parse("Can not assign to objects");*/
 		if (ast_node.opts.dubmat == true)
-			js_code = ast_generate_js(ast_node.nodes[0]) + ' ' + ast_node.op + " numeric.clone(" + ast_generate_js(ast_node.nodes[1]) + ')';
+			js_code = ast_generate_js(ast_node.nodes[1]) + ' ' + ast_node.op + " numeric.clone(" + ast_generate_js(ast_node.nodes[0]) + ')';
 		else
-			js_code = ast_generate_js(ast_node.nodes[0]) + ' ' + ast_node.op + ' ' + ast_generate_js(ast_node.nodes[1]);
+			js_code = ast_generate_js(ast_node.nodes[1]) + ' ' + ast_node.op + ' ' + ast_generate_js(ast_node.nodes[0]);
 	}	
 	else if(ast_node.op == '[,,]') //multiassign
 	{
@@ -257,14 +275,74 @@ function ast_generate_js(ast_node)
 				js_code += ast_node.opts.names[i] + ' = __temp[' + i + ']' + (i!=ast_node.opts.names.length-1 ? ';\n' : '');
 		}
 	}
+	else if (ast_node.op == ":")
+	{
+		if(ast_node.nodes.length == 2)
+			js_code = "cortex.createrange(" + ast_generate_js(ast_node.nodes[1]) + ", " + ast_generate_js(ast_node.nodes[0]) + ", 1)" ;
+		else
+			js_code = "cortex.createrange(" + ast_generate_js(ast_node.nodes[2]) + ", " + ast_generate_js(ast_node.nodes[0]) + ", " + ast_generate_js(ast_node.nodes[1]) + ")";
+	}	
+	else if (ast_node.op == ".")
+	{
+		js_code = ast_generate_js(ast_node.nodes[1]) + "[" + ast_generate_js(ast_node.nodes[0]) + "]" ;
+	}
+	else if (ast_node.op == "$c")
+	{
+		js_code =  '[';
+		for(var i=ast_node.nodes.length-2; i>=0; i--)
+		{
+			js_code += ast_generate_js(ast_node.nodes[i]) + ((i!=0) ? ', ' : '');
+		}
+		js_code += ']';
+	}
+	else if (ast_node.op == "+=" || ast_node.op == "-=")
+	{
+		if(ast_node.type == 2 || ast_node.type == 4)
+			js_code = ast_generate_js(ast_node.nodes[1]) + ast_node.op + ast_generate_js(ast_node.nodes[0]);
+		else if (ast_node.type == 3)
+		{
+			var op_func = ast_node.op == "+=" ? "numeric.addeq(" : "numeric.subeq(";
+			js_code = op_func + ast_generate_js(ast_node.nodes[1]) + ', ' + ast_generate_js(ast_node.nodes[0]) + ")";
+		}
+	}
+	else if (ast_node.op == "*=" || ast_node.op == "/=")
+	{
+		if(ast_node.type == 2 )
+			js_code = ast_generate_js(ast_node.nodes[1]) + ast_node.op + ast_generate_js(ast_node.nodes[0]);
+		else if (ast_node.type == 3)
+		{
+			var op_func = ast_node.op == "*=" ? ast_node.nodes[0].type == 2 ? "numeric.muleq(" : "numeric.dot(" : "numeric.diveq(";
+			js_code = op_func + ast_generate_js(ast_node.nodes[1]) + ', ' + ast_generate_js(ast_node.nodes[0]) + ")";
+		}
+	}
+	else if (ast_node.op == ".()")
+	{
+		js_code = ast_node.opts.fname + '(' + ast_generate_js(ast_node.nodes[ast_node.nodes.length-1]);
+		
+		for(var i=ast_node.nodes.length-2; i>=0; i--)
+		{
+			js_code += ', ' + ast_generate_js(ast_node.nodes[i]);
+		}
+		js_code += ')';
+		
+		if (ast_node.opts.multireturn === true)
+			js_code += '[0]'; // multi return functions returns array of variables, we will take the first if no one handles explicitly ( fix for a = svd(..) or svd(..) )
+	}	
 	else if(ast_node.op == '[]')
 	{
-		js_code = ast_generate_js(ast_node.nodes[0]) + '[' + ast_generate_js(ast_node.nodes[2]) + '][' + ast_generate_js(ast_node.nodes[1]) + ']';
+		if(ast_node.nodes.length == 2)
+			js_code = ast_generate_js(ast_node.nodes[1]) + '.charCodeAt(' + ast_generate_js(ast_node.nodes[0]) + ')'; // string
+		else
+			js_code = ast_generate_js(ast_node.nodes[2]) + '[' + ast_generate_js(ast_node.nodes[1]) + '][' + ast_generate_js(ast_node.nodes[0]) + ']';
 	}
 	else if(ast_node.op == '()')
 	{
-		js_code = ast_node.opts.fname + '(';
-		for(var i=ast_node.nodes.length-1; i>=0; i--)
+		if(ast_node.opts.tempdelegate)
+			js_code = ast_node.opts.fname + '(' + ast_generate_js(ast_node.nodes[ast_node.nodes.length-1]) + ')(';
+		else 
+			js_code = ast_node.opts.fname + '(';
+		
+		for(var i=ast_node.nodes.length-2; i>=0; i--)
 		{
 			js_code += ast_generate_js(ast_node.nodes[i]) + ((i!=0) ? ', ' : '');
 		}
@@ -275,7 +353,7 @@ function ast_generate_js(ast_node)
 	}
 	else if(ast_node.op == '[]=')
 	{
-		js_code = ast_generate_js(ast_node.nodes[0]) + '[' + ast_generate_js(ast_node.nodes[3]) + '][' + ast_generate_js(ast_node.nodes[2]) + '] = ' + ast_generate_js(ast_node.nodes[1]);
+		js_code = ast_generate_js(ast_node.nodes[1]) + ' = ' + ast_generate_js(ast_node.nodes[0]);
 	}
 	else if(ast_node.op == '[..]')
 	{
@@ -285,23 +363,23 @@ function ast_generate_js(ast_node)
 			js_code += '[';
 			for(var j=ast_node.opts.cols-1; j>=0; j--)
 			{
-				js_code += ast_generate_js(ast_node.nodes[i*ast_node.opts.cols+j]) + ((j!=0) ? ',' : '');
+				js_code += ast_generate_js(ast_node.nodes[i*ast_node.opts.cols+j]) + ((j!=0) ? ', ' : '');
 			}
-			js_code += ']' + ((i!=0) ? ',' : '');
+			js_code += ']' + ((i!=0) ? ', ' : '');
 		}
 		js_code += ']';
 		//js_code = ast_generate_js(ast_node.nodes[0]) + '[' + ast_generate_js(ast_node.nodes[2]) + '][' + ast_generate_js(ast_node.nodes[3]) + '] = ' + ast_generate_js(ast_node.nodes[1]);
 	}
 	else if(ast_node.op == '[:]' || ast_node.op == '[:]=')
 	{
-		js_code = ast_node.opts.mode + '(' + ast_generate_js(ast_node.nodes[0]) ;
-		for(var i=ast_node.nodes.length-1; i>=1; i--)
+		js_code = ast_node.opts.mode + '(' + ast_generate_js(ast_node.nodes[ast_node.nodes.length-1]) ;
+		for(var i=ast_node.nodes.length-2; i>=0; i--)
 		{
 			js_code += ', ' + ast_generate_js(ast_node.nodes[i]);
 		}
 		js_code += ")";
 	}
-	else if(ast_node.op == '+' || ast_node.op == '-' || ast_node.op == '*' || ast_node.op == '/' || ast_node.op == '.*' || ast_node.op == './' || IsRelop(ast_node.op) || ast_node.op == '&&'  || ast_node.op == '||')
+	else if(ast_node.op == '+' || ast_node.op == '-' || ast_node.op == '*' || ast_node.op == '/' || ast_node.op == '%' || ast_node.op == '.*' || ast_node.op == './' || IsRelop(ast_node.op) || ast_node.op == '&&'  || ast_node.op == '||')
 	{
 		if ( (ast_node.nodes[0].type == 2 && ast_node.nodes[1].type == 2) || 
 			 (ast_node.nodes[0].type == 4 && ast_node.nodes[1].type == 2) || 
@@ -310,14 +388,14 @@ function ast_generate_js(ast_node)
 			 (ast_node.nodes[0].type == 1 && ast_node.nodes[1].type == 1))
 			js_code = ast_generate_js(ast_node.nodes[1]) + ' ' +ast_node.op + ' ' +ast_generate_js(ast_node.nodes[0]);
 		else if (ast_node.nodes[0].type == 3 && ast_node.nodes[1].type == 3 && ast_node.op == '*') 
-			js_code = "cortex.dot(" + ast_generate_js(ast_node.nodes[1]) + ',' + ast_generate_js(ast_node.nodes[0]) + ")";
+			js_code = "cortex.dot(" + ast_generate_js(ast_node.nodes[1]) + ', ' + ast_generate_js(ast_node.nodes[0]) + ")";
 		else if ( (ast_node.nodes[0].type == 3 && ast_node.nodes[1].type == 3) && (ast_node.op == '+' || ast_node.op == '-')) 
-			js_code = op_func_map[ast_node.op] + '(' + ast_generate_js(ast_node.nodes[1]) + ',' + ast_generate_js(ast_node.nodes[0]) + ")";
-		else
 		{
-			var func_s = op_func_map[ast_node.op];
-			var type_s = "";//"_" + type_func_map[ast_node.nodes[1].type] + "" + type_func_map[ast_node.nodes[0].type];
-			js_code += func_s + type_s + "(" + ast_generate_js(ast_node.nodes[1]) + ", " + ast_generate_js(ast_node.nodes[0]) + ")";
+			js_code = (ast_node.op == '+' ? "cortex.add_mm" : "cortex.sub_mm") + '(' + ast_generate_js(ast_node.nodes[1]) + ', ' + ast_generate_js(ast_node.nodes[0]) + ")";
+		}
+		else
+		{		
+			js_code += op_func_map[ast_node.op] + "(" + ast_generate_js(ast_node.nodes[1]) + ", " + ast_generate_js(ast_node.nodes[0]) + ")";
 		}
 	}
 	else if(ast_node.op == '$++' || ast_node.op == '$--')
@@ -329,12 +407,14 @@ function ast_generate_js(ast_node)
 		if(ast_node.nodes[0].type == 2)
 			js_code = ast_node.op.slice(0, 2) + ast_generate_js(ast_node.nodes[0]);
 		else
-			js_code = "numeric.addeq(" + ast_generate_js(ast_node.nodes[0]) + "," + (ast_node.op == '--$' ? "-1" : "1") + ")";
+			js_code = "numeric.addeq(" + ast_generate_js(ast_node.nodes[0]) + ", " + (ast_node.op == '--$' ? "-1" : "1") + ")";
 	}
 	else
 	{
 		if ( const_vars[ast_node.op] != undefined )
 			js_code = const_vars[ast_node.op];
+		else if (ast_node.opts.member_offset !== undefined )
+			js_code = "_this[" + ast_node.opts.member_offset + "]";
 		else
 			js_code = ast_node.op;
 	}
@@ -345,7 +425,7 @@ function ast_generate_js(ast_node)
 function ast_collect_vars(ast_node, vars)
 {
 	if( ast_node.op == '=' && ast_node.opts.define)
-		vars.push( ast_node.nodes[0].op);
+		vars.push( ast_node.nodes[1].op);
 		
 	if( ast_node.op == '[,,]')
 		for(var i=0;i< ast_node.opts.names.length; i++)
@@ -368,7 +448,7 @@ function ast_var_defines(root_node)
 		defstr += (i==0 ? 'var ' : ', ') + v[i];
 		
 	if (v.length > 0)
-		defstr += ';\n';
+		defstr += ';\n' + IndentSpaces();
 		
 	return defstr;
 }
@@ -380,7 +460,7 @@ function ast_generate_code(no_expression)
 	var defs = ast_var_defines(root_node);
 		
 	if (cur_scope == undefined && root_node.op != '[,,]' && !no_expression)
-		__ans_pos = compiled_js_test.length + defs.length;
+		__ans_pos = IndentSpaces().length + compiled_js.length + defs.length;
 	
 	return defs + ast_generate_js(root_node);
 }
@@ -388,32 +468,36 @@ function ast_generate_code(no_expression)
 var Delegate = {};
 Delegate.ftable_funcs = [];
 Delegate.map = [];
-Delegate.return_stack = [];
 
-Delegate.LastReturnStack = function( )
+
+Delegate.GetMapName = function( var_name )
 {
-	return this.return_stack[this.return_stack.length-1];
+	if(comp_is_member(var_name))
+		return (cur_scope.isConstructor ? cur_scope.name : cortexParser.getObjectDef(cur_scope.this_type).name) + "/" + var_name;
+	else
+	{
+		var is_global = cur_scope == undefined || cur_scope.get_var_type(var_name) == undefined;
+		return is_global ? var_name : cur_scope.name + "/" + var_name;
+	}
 }
 
-Delegate.Assign = function( type, read_delegate, write_delegate)
+Delegate.Assign = function( type, read_delegates, write_delegate_name)
 {
 	if(type != 5 && type != 6)
 		return;
 		
-	var is_global_w = cur_scope == undefined || cur_scope.get_var_type(write_delegate) == undefined;
-	var full_name_write = is_global_w ? write_delegate : cur_scope.name + "_" + write_delegate;
+	var full_name_write = Delegate.GetMapName(write_delegate_name);
 	
-	for(var i = 0;i < read_delegate.length; i++)
+	for(var i = 0;i < read_delegates.length; i++)
 	{
-		var is_global_r = cur_scope == undefined || cur_scope.get_var_type(read_delegate[i]) == undefined;
-		var full_name_read = is_global_r ? read_delegate[i] : cur_scope.name + "_" + read_delegate[i];
+		var full_name_read = Delegate.GetMapName(read_delegates[i]);
 		
 		if (this.map[full_name_write] == undefined)
-			this.map[full_name_write] = [];
+			this.map[full_name_write] = []; // create entry if not defined before
 			
 		if(this.map[full_name_read] == undefined)
 		{
-			this.map[full_name_write].push(full_name_read);
+			this.map[full_name_write].push(full_name_read);   // transfer entries to write delegate from read delegates
 		}
 		else
 		{
@@ -434,6 +518,20 @@ Delegate.Ftable_suffix = function( param_types, param_count, return_types)
 	}
 	
 	return suffix + "$" + return_types.toString();
+}
+
+Delegate.Dump = function()
+{
+	var str = "";
+	for (var m in Delegate.map)
+	{	
+		if (!Delegate.map.hasOwnProperty(m))
+		    continue;
+			
+		str += m + " <-- " + JSON.stringify(Delegate.map[m], null, 4) + "\n";
+	}
+	
+	return str;
 }
 
 function GetLinkFunctionName(fname, param_types, param_count)
@@ -465,26 +563,6 @@ function GetUniqueFName(fname, param_suffix)
 }
 
 
-
-function get_lineof_current_position()
-{            
-	var start, end;
-
-	for (start = inp_pos-1; start > 0 ; start--)
-	{
-		if (inp[start] == '\n' || inp[start] == '\r')
-		{
-			start++;
-			break;
-		}
-	}
-
-	for (end = inp_pos-1; end < inp.Length && inp[end] != '\n' && inp[end] != '\r'; end++)
-	{
-	}
-
-	return inp.substring(start,end+1);
-}
 
 function Error_parse(s)
 {
@@ -518,6 +596,22 @@ function LookAhead()
 	}
 }
 
+function PeekNextToken()
+{
+	var saved_inp_pos = inp_pos;
+	var saved_look = Look;
+	
+	GetChar();
+	SkipWhite();
+	
+	var ret = Look + LookAhead();
+	
+	inp_pos = saved_inp_pos;
+	Look = saved_look;
+	
+	return ret;
+}
+
 function Match(x)
 {
 	if (Look != x)
@@ -533,11 +627,61 @@ function Match(x)
 
 function CheckAhead(x)
 {
-	var a = inp.substring(inp_pos-1,inp_pos+x.length-1);
-	if ( a== x && !IsAlNum( inp[inp_pos+x.length-1] ) )
+	var a = inp.substring(inp_pos-1, inp_pos + x.length - 1);
+	if ( a == x && !IsAlNum( inp[inp_pos + x.length - 1] ) )
 	 return true;
 	 
 	return false;
+}
+
+function IsLambdaExpr()
+{
+	var saved_inp_pos = inp_pos;
+	var saved_look = Look;
+	
+	var parens = Look == '(';
+	
+	if(parens)
+	{
+		Match('(');
+		if(Look == ')')  // empty lambda ( )
+		{
+			inp_pos = saved_inp_pos;
+			Look = saved_look;
+			return true;
+		}
+	}
+	
+	if (!IsAlpha(Look))
+	{
+		inp_pos = saved_inp_pos;
+		Look = saved_look;
+		return false;
+	}
+
+	while (IsAlNum(Look))
+	{
+		GetChar();
+	}
+
+	SkipWhite();
+	
+	var flag = false;
+	
+	if(parens)
+	{
+		if( (Look == ')' && PeekNextToken() == '=>') || Look == ',')
+			flag = true;     // (a,.. or (a)
+	}
+	else
+	{
+		if(Look == '=' && LookAhead() == '>')
+			flag = true;    // a => 
+	}
+			
+	inp_pos = saved_inp_pos;
+	Look = saved_look;
+	return flag;
 }
 
 function Expected(s)
@@ -545,25 +689,18 @@ function Expected(s)
 	Error_parse(s + " expected");
 }
 
-function Emitln(s)
-{
-	compiled_asm += s + "\n";
-}
 
-function EmitFuncln(s)
+function Emitln_ast(js, cout)
 {
-	functions_asm += s + "\n";
+	compiled_js += IndentSpaces() + js + "\n";
+	compiled_c += IndentSpaces() + (cout ? cout : js)  + "\n";
 }
 
 
-function Emitln_ast(s)
+function EmitFuncln_ast(js, cout)
 {
-	compiled_js_test += s + "\n";
-}
-
-function EmitFuncln_ast(s)
-{
-	functions_js_test += s + "\n";
+	functions_js += IndentSpaces() + js + "\n";
+	functions_c += IndentSpaces() + (cout? cout : js) + "\n";
 }
 
 function SkipWhite()
@@ -711,6 +848,7 @@ function GetString()
 	return Name;
 }
 
+
 function GetName()
 {
 	var Name = "";
@@ -726,6 +864,33 @@ function GetName()
 
 	SkipWhite();
 	return Name;
+}
+
+function GetNameList(sep, end, optional)
+{
+	var list = new Array();
+	
+	while(Look != end)
+	{
+		var new_item = GetName();
+		
+		for(var i=0; i < list.length; i++)
+			if (new_item == list[i])
+				Error_parse("Names should be different :'" + new_item + "'");
+		list.push(new_item);
+		
+		if (Look != end)
+		{
+			if(optional)
+			{
+				if( Look == sep)
+					Match(sep);
+			}
+			else
+				Match(sep);
+		}
+	}
+	return list;
 }
 
 function GetHex()
@@ -815,14 +980,10 @@ function GetMatrix(is_verbatim)
 			else
 				var num = GetNum();
 				
-				Emitln("asm_reg0_real =" + num + ";");
-				
 				ast_postfix_push(num, 2, 0, "GetMatrix");
 		}
 		
-		if (type == 2)
-			PushLast(type);
-		else 
+		if (type != 2)
 		{
 			Error_parse("Only reals are allowed for matrix elements.");
 		}
@@ -862,8 +1023,6 @@ function GetMatrix(is_verbatim)
 	
 	num_cols = cur_col;
 	
-	Emitln("asm_load_matrix(" + num_rows + "," + num_cols + ");");
-	
 	var ast=ast_postfix_push("[..]", 3, num_rows * num_cols, "GetMatrix");
 	ast.opts.rows = num_rows;
 	ast.opts.cols = num_cols;
@@ -871,47 +1030,38 @@ function GetMatrix(is_verbatim)
 	rvalue[rvalue_pos] = true;
 }
 
+function IncIndent()
+{
+	cur_indent++;
+}
 
+function DecIndent()
+{
+	cur_indent--;
+}
+
+function IndentSpaces()
+{
+	return Array(cur_indent*4).join(" ");
+}
 
 
 ////////////// PARSER
 function AddSubOp(top_type, op)
 {
-	var prefix, suffix="";
-	if (op=='+')
-	{
-		Match('+');
-		prefix = 'asm_add';
-	}
-	else
-	{
-		Match('-');
-		prefix = 'asm_sub';
-	}
+	Match(op);
 	
 	var reg0_type = Term();	
 	
 	var opmode = top_type + "_" + reg0_type;
 	
-	
-	
-	PopReg1(top_type);
 	switch(opmode)
 	{
 		case "2_2":
-			Emitln( prefix +"_real();" );
 			return 2;
 		case "2_3":
-			Emitln( prefix +"_rm();" );
-			rvalue[rvalue_pos] = true;
-			return 3;
 		case "3_2":
-			Emitln( prefix +"_mr();" );
-			rvalue[rvalue_pos] = true;
-			return 3;
 		case "3_3":
-			Emitln( prefix +"_mm();" );
-			
 			rvalue[rvalue_pos] = true;
 			return 3;
 		case "4_2":
@@ -919,86 +1069,59 @@ function AddSubOp(top_type, op)
 		case "4_4":
 			if(op != '-')
 			{
-				if(opmode == "4_2")
-					suffix = "_sr";
-				if(opmode == "2_4")
-					suffix = "_rs";
-				Emitln( "asm_str_concat" + suffix + " ();" );
 				rvalue[rvalue_pos] = true;
 				return 4;
 			}
 			break;
 	}
 	
-	Error_parse( "'" + op +"' operator is not supported for types: '" + types[top_type] + "' and '" + types[reg0_type] + "'");
+	Error_parse( "'" + op +"' operator is not supported for types: '" + type_names[top_type] + "' and '" + type_names[reg0_type] + "'");
 }
 
 function MulDivOpElm(top_type, op)
 {
-	var instruction;
 	if (op == './')
 	{
 		Match('.');
 		Match('/');
-		instruction = 'asm_elm_div';
 	}
 	else if (op == '.*')
 	{
 		Match('.');
 		Match('*');
-		instruction = 'asm_elm_mul';
 	}
 	
-	var reg0_type = SignedFactor();
+	var reg0_type = Unary();
 	
 	if (top_type != 3 || reg0_type != 3)
 		Error_parse("Matrix type required for element wise matrix operations");
 	
-	PopReg1(top_type);
-	Emitln( instruction +"();" );
 	rvalue[rvalue_pos] = true;
 	return 3;
 }
 
 function MulDivOp(top_type, op)
 {
-	var prefix;
-	if (op=='*')
-	{
-		Match('*');
-		prefix = 'asm_mul';
-	}
-	else
-	{
-		Match('/');
-		prefix = 'asm_div';
-	}
+	Match(op);
 	
-	var reg0_type = SignedFactor();
-	
-	
+	var reg0_type = Unary();
 	
 	if (top_type == 2)
 	{
 		if (reg0_type == 2)
 		{
-			PopReg1(top_type);
-			Emitln( prefix +"_real();" );
-						
 			return 2;
 		}
 		else if (reg0_type == 3)
 		{
 			if (op=='*')
 			{
-				PopReg1(top_type);
-				Emitln( prefix +"_rm();" );
 				rvalue[rvalue_pos] = true;
 				return 3;
 			}
 			else
-			{
-				Error_parse("Real division by matrix is undefined.");
+			{			
+				Error_parse(op == '/' ? "Real division by matrix is undefined." : "Remainder by matrix is undefined.");
 			}
 		}		
 	}
@@ -1006,17 +1129,13 @@ function MulDivOp(top_type, op)
 	{
 		if (reg0_type == 2)
 		{
-			PopReg1(top_type);
-			Emitln( prefix +"_mr();" );
 			rvalue[rvalue_pos] = true;
 			return 3;
 		}
 		else if(reg0_type == 3)
 		{
-			if (op=='*')
+			if (op=='*' || op == '%')
 			{
-				PopReg1(top_type);
-				Emitln( prefix +"_mm();" );
 				rvalue[rvalue_pos] = true;
 				return 3;
 			}
@@ -1028,42 +1147,43 @@ function MulDivOp(top_type, op)
 		}
 	}
 	
-	Error_parse( "'" + op +"' operator is not supported for types: '" + types[top_type] + "' and '" + types[reg0_type] + "'");
+	Error_parse( "'" + op +"' operator is not supported for types: '" + type_names[top_type] + "' and '" + type_names[reg0_type] + "'");
 }
 
-function IncDecOpPostfix(Name, op)
+function IncDecPostfix()
 {
-	var type = comp_get_var_type(Name);
+	var type = IndexMemberFunc();
+	var op = undefined;
 	
-	if(type == 3)
-		Error_parse("Use prefix notation for matrix increment/decrement for efficiency. (ex : '++" + Name + "' )"); // postfix for matrices seem inefficient so disabled for now
-		
-	if( type != 2)
-		Error_parse("Increment decrement operator is only supported for reals"); // postfix for matrices seem inefficient so disabled for now
-			
-	EmitReadVar(Name, type);
-	
-	if(type == 2)
+	if( Look == '+' && LookAhead() == '+')
 	{
-		if (op == '+')
-		{
-			Emitln( "asm_reg0_real++;" );			
-			EmitWriteVar(Name, type);
-			Emitln("asm_reg0_real--;");
-			ast_postfix_push(Name, type, 0, "IncDecOpPostfix");
-			ast_postfix_push("$++", type, 1, "IncDecOpPostfix");
-		}
-		else
-		{
-			Emitln( "asm_reg0_real--;" );			
-			EmitWriteVar(Name, type);
-			Emitln("asm_reg0_real++;");
-			ast_postfix_push(Name, type, 0, "IncDecOpPostfix");
-			ast_postfix_push("$--", type, 1, "IncDecOpPostfix");
-		}
+		op = '+';
+	}
+	else if( Look == '-' && LookAhead() == '-')
+	{
+		op = '-';
 	}
 	
-	
+	if(op)
+	{
+		if(!is_lvalue_last(true))
+			Error_parse("Invalid increment operand");
+
+		if(type == 3)
+			Error_parse("Use prefix notation for matrix increment/decrement for efficiency. (ex : '++M' )"); // postfix for matrices seem inefficient so disabled for now
+		
+		if( type != 2)
+			Error_parse("Increment decrement operator is only supported for reals"); // postfix for matrices seem inefficient so disabled for now
+		
+		Match(op);
+		Match(op);
+		
+		if(op == '+')
+			ast_postfix_push("$++", type, 1, "IncPostfix");
+		else
+			ast_postfix_push("$--", type, 1, "DecPostfix");
+	}
+		
 	return type;
 }
 
@@ -1079,9 +1199,194 @@ function Transpose()
 			Error_parse("Can not transpose non matrices");
 		
 		rvalue[rvalue_pos] = true;
-		Emitln("asm_reg0_transpose();");
 		
 		ast_postfix_push("'", type, 1, "transpose");
+	}
+		
+	return type;
+}
+
+function Ident(namespace)
+{
+	var type;
+	var is_lambda;
+	
+	if (IsAlpha(Look) || (is_lambda = IsLambdaExpr()) )
+	{
+		var Name = is_lambda ? "function" : GetName();
+		
+		if (Name === "class")
+		{
+			// ex nihilo definition and creation 
+			type = DoClassDefExNihilo();
+			return type;
+		}
+		else if (Name  == "function")
+		{		
+			Name = "_anonymous_" + anonymous_uid;
+			DoFunction(false, true);
+		}
+		
+		if(current_module_name.length > 0)
+			Name += '$' + current_module_name;
+			
+		if(namespace)
+			Name += '$' + namespace;
+		
+		type = comp_try_get_var_type(Name);
+		
+		/*if(type ===99999)
+			Error_parse("Uninitialized variable is used: '" + Name + "'");*/
+		
+		var ast = ast_postfix_push(Name, type, 0);
+		
+		if(type == 5 || type == 6)
+			ast.opts.read_delegates = [Delegate.GetMapName(Name)];
+		
+		if(comp_is_member(Name))
+			ast.opts.member_offset = cur_scope.members ? cur_scope.members[Name][1] : cur_scope.vars_rel_pos[Name];
+		
+	}
+	else if (Look == '[')
+	{
+		Match('[');
+		GetMatrix(false);
+		Match(']');
+		type = 3;
+	}
+	else if (Look == '@' && LookAhead() == '[')
+	{
+		Match('@');
+		Match('[');
+		GetMatrix(true);
+		Match(']');
+		type = 3;
+	}
+	else if (Look == '"')
+	{
+		type = 4;
+		GetChar();
+		var str = EscapeString(GetString());
+		ast_postfix_push( '"' + str + '"', type, 0);
+		Match('"');
+	}
+	else
+	{
+		var num = GetNum();
+		type = 2;
+		
+		ast_postfix_push(num, type, 0);
+	}
+	
+	return type;
+}
+
+
+function IndexMemberFunc(multireturn)
+{
+	var type = Factor();
+	
+	while(Look == "(" || Look == '[' || Look == '.' && (LookAhead() != '*' && LookAhead() != '/'))
+	{	
+		if(Look == '(')
+		{
+			if(type == 5 || cortexParser.isObject(type) )  // static function
+			{
+				if ( !( ast_postfix.length > 0 && IsAlpha(ast_postfix[ast_postfix.length-1].op[0])))
+					Error_parse("Function name expected");
+				var Name = ast_postfix[ast_postfix.length-1].op;
+				
+				var return_types = FuncCall(Name, false, false);
+			}
+			else if(type == 6) // function pointer
+			{
+				if ( ( ast_postfix.length > 0 && IsAlpha(ast_postfix[ast_postfix.length-1].op[0])))
+					var Name = ast_postfix[ast_postfix.length-1].op;
+				else
+				{
+					var Name = "_temp_delegate" + (anonymous_uid++);
+					Delegate.Assign( type, ast_postfix[ast_postfix.length-1].opts.read_delegates , Name); 
+				}
+				var return_types = FuncCall(Name, false, true);
+			}
+			else if(type == 8) // class method
+			{
+				if ( !( ast_postfix.length > 0 && IsAlpha(ast_postfix[ast_postfix.length-1].op[0])))
+					Error_parse("Method name expected");
+				
+				var MemberName = ast_postfix[ast_postfix.length-1].op;
+				ast_postfix[ast_postfix.length-1].op = "_this";
+				var return_types = MethodCall(cortexParser.getObjectDef(cur_scope.this_type), MemberName, cur_scope.this_type);
+			}
+			else
+				Error_parse("Callable type expected");
+			
+			if(multireturn)
+				type = return_types;
+			else
+			{
+				ClearUnusedParams(return_types, 1, return_types.length);
+				type = return_types[0];
+				type = type == 5 ? 6 : type;
+			}
+		}
+		
+		if(Look == '[')
+		{
+			if (type==4)
+			{
+				StringIndexer();
+				ast_postfix_push( "[]", 2, 2);
+				type = 2;
+			}
+			else if (type==3)
+			{
+				var multiple = MatrixIndexer();
+
+				if (!multiple)
+				{
+					ast_postfix_push( "[]", 2, 3);
+					
+					type = 2;
+				}
+				else
+				{
+					switch(multiple)
+					{
+						case 102:
+							var ast = ast_postfix_push("[:]", type, 5, "get_slice()");
+							ast.opts.mode = "cortex.getslice";
+							break;
+						case 100:
+							var ast = ast_postfix_push("[:]", type, 4, "get_slice(1)");
+							ast.opts.mode = "cortex.getcol";
+							break;
+						case 101:
+							var ast = ast_postfix_push("[:]", type, 4, "get_slice(2)");
+							ast.opts.mode = "cortex.getrow";
+							break;
+					}
+					
+					rvalue[rvalue_pos] = true;
+					type = 3;
+				}
+			}
+			else
+			{
+				Error_parse("Indexer [] operator only works for matrices and strings.");
+			}
+		}
+		
+		if(Look == '.' && (LookAhead() != '*' && LookAhead() != '/'))
+		{
+			if(type == undefined)
+				Error_parse("Undefined class or module");
+			if(type == 9) // module
+				type = ModuleResolution();
+			else
+				type = MemberAccess(type);
+		}
+		
 	}
 		
 	return type;
@@ -1096,37 +1401,20 @@ function IncDecPrefix()
 		var op = Look;
 		Match(op);
 		Match(op);
-		var Name = GetName();
 		
-		type = comp_get_var_type(Name);
+		type = IncDecPostfix();
 		
 		if( type != 2 && type != 3)
 			Error_parse("Increment decrement operator is only supported for reals and matrices");
+			
+		if(!is_lvalue_last(true))
+			Error_parse("Invalid increment operand");			
 		
-		if(type == 2)
-		{
-			EmitReadVar(Name,2);
-			if(op == '+')
-				Emitln("asm_reg0_real++;");
-			else
-				Emitln("asm_reg0_real--;");
-			EmitWriteVar(Name,2);
-		}
-		else if (type ==3)
-		{
-			EmitReadVar(Name, 3);
-			if(op == '+')
-				Emitln( "asm_inc_mat();" );
-			else
-				Emitln( "asm_dec_mat();" );
-		}
-		
-		ast_postfix_push(Name, type, 0, "IncDecPrefix");
 		ast_postfix_push(op+op + "$", type, 1, "IncDecPrefix");
 	}
 	else
 	{
-		type = Factor();
+		type = IncDecPostfix();
 	}
 	
 	return type;
@@ -1134,76 +1422,17 @@ function IncDecPrefix()
 
 ///////////////////////////////////////
 //Parse and Translate a Relation
-function BoolOp(top_type, op)
-{
-	
-	var prefix;
-	
-	if (op=='||')
-	{
-		Match('|');
-		Match('|');
-		prefix = 'asm_or_bool';
-	}
-	else if ( op == '&&')
-	{
-		Match('&');
-		Match('&');
-		prefix = 'asm_and_bool';
-	}
-	else if ( op == '!')
-	{
-		Match('!');		
-		prefix = 'asm_not_bool';
-	}
-	else
-	{
-		Error_parse("Invalid bool op : '" + op + "'.");
-	}
-	
-	var reg0_type = BoolTerm();	
-	if (reg0_type!=1)
-	{
-		if (op != '!' || top_type!=1)
-		{
-			Error_parse('Boolean operations are supported only for boolean type');
-			return 1;
-		}
-	}
-	
-	if (op != '!')
-	{
-		PopReg1(top_type);
-	}
-	Emitln( prefix + '();');
-	
-	
-	ast_postfix_push(op, reg0_type, op == '!' ? 1 : 2);
-	
-	return reg0_type;
-} 
 
 function RelOp(top_type, op)
 {	
-	var reg0_type = ArithmeticExpr();
+	var reg0_type = ColonOp();
 	
 	if (reg0_type ==4 && top_type==4)
 	{
-		if (op=='==')
-		{
-			prefix = 'asm_str_eq';
-		}
-		else if ( op == '!=')
-		{		
-			prefix = 'asm_str_neq';
-		}
-		else
+		if (op !='==' && op != '!=')
 		{
 			Error_parse("Invalid string operator.");
 		}
-		
-		PopReg1(top_type);
-		Emitln( prefix + '();');
 		
 		ast_postfix_push(op, 1, 2);
 	
@@ -1211,97 +1440,73 @@ function RelOp(top_type, op)
 	}
 	else if ((reg0_type == 6 || reg0_type ==5) && (top_type == 6 || top_type == 5))
 	{
-		if (op=='==')
-		{
-			PopReg1(top_type);
-			Emitln( 'asm_eq()');
-		}
-		else if ( op == '!=')
-		{		
-			PopReg1(top_type);
-			Emitln( 'asm_neq()');
-		}
-		
 		ast_postfix_push(op, 1, 2);
-		
+
 		return 1;
 	}
 	else if(reg0_type ==3 && top_type==3)
 	{
-		if (op=='==')
-		{
-			prefix = 'asm_matrix_eq';
-		}
-		else if ( op == '!=')
-		{		
-			prefix = 'asm_matrix_neq';
-		}
-		else
+		if (op !='==' && op != '!=')
 		{
 			Error_parse("Invalid matrix operator.");
 		}
 		
-		PopReg1(top_type);
-		Emitln( prefix + '();');
-		
 		ast_postfix_push(op, 1, 2);
 		
 		return 1;
-	}
-	
-	var prefix;
-	if (op=='==')
-	{
-		prefix = 'asm_eq';
-	}
-	else if ( op == '!=')
-	{		
-		prefix = 'asm_neq';
-	}
-	else if ( op == '<')
-	{
-		prefix = 'asm_le';
-	}
-	else if ( op == '>')
-	{		
-		prefix = 'asm_ge';
-	}
-	else if ( op == '>=')
-	{		
-		prefix = 'asm_geq';
-	}
-	else if ( op == '<=')
-	{		
-		prefix = 'asm_leq';
-	}
-	else
-	{
-		Error_parse("Invalid bool op : '" + op + "'.");
 	}
 	
 	
 	if (reg0_type !=2 || top_type!=2)
 	{
-		Error_parse("Relational operations are not supported for the given types: '" + types[reg0_type] + "' and '" + types[top_type] + "'");
+		Error_parse("Relational operations are not supported for the given types: '" + type_names[reg0_type] + "' and '" + type_names[top_type] + "'");
 		return 2;
-	}	
-	
+	}
 	
     ast_postfix_push(op, 1, 2);
-	
-	PopReg1(top_type);
-	Emitln( prefix + '();');
 	
 	return 1;
 }
 
-function Relation()
+function ColonOp()
 {
 	var type = ArithmeticExpr();
+	
+	if(Look == ':')
+	{
+		if(type != 2)
+			Error_parse("Real type expected");
+
+		Match(":");
+	
+		type = ArithmeticExpr();
+		if(type != 2)
+			Error_parse("Real type expected");
+		
+		if(Look == ':')
+		{
+			Match(":");
+			type = ArithmeticExpr();
+			if(type != 2)
+				Error_parse("Real type expected");
+			
+			ast_postfix_push(":", 3, 3);
+		}
+		else		
+			ast_postfix_push(":", 3, 2);
+			
+		type = 3;
+	}
+	
+	return type;
+}
+
+function Relation()
+{
+	var type = ColonOp();
 	var r;
 	if (IsRelop(Look, LookAhead() ))
 	{
-		PushLast(type);
 		switch(Look)
 		{
 		case '=': 
@@ -1344,57 +1549,264 @@ function Relation()
 	return type;
 }
 
-//Parse and Translate a Boolean Factor with NOT
-function NotFactor()
-{
-	var type;
-	if (Look == '!') 
-	{		
-		type = BoolOp(type, '!');
-	}
-	else
-		type = Relation();
-
-	return type;
-}
 
 //Parse and Translate a Boolean Term
 function BoolTerm()
 {
-	var type = NotFactor();
+	var type = Relation();
 	while (Look == '&' && LookAhead() == '&')
-	{
-		PushLast(type);		
-		type = BoolOp(type, '&&');
+	{	
+		Match('&');Match('&');
+		var rhs_type = Relation();
+		
+		if(rhs_type != 1 || type != 1)
+			Error_parse('Boolean operations are supported only for boolean type');
+		
+		ast_postfix_push('&&', type, 2);
 	}
 
 	return type;
 }
 
-//Parse and Translate an Expression
-function ExpressionNew()
+function is_lvalue_last(incdec)
 {
-	Delegate.return_stack.push([]);
+	var last_node = ast_postfix[ast_postfix.length-1];
+	
+	return IsAlpha(last_node.op[0]) ||						// a = expr
+		(last_node.op == '[]') 		|| 						// a[0,0] = expr
+		(last_node.op == '[:]' && incdec == false) ||  		// a[0:1,2:3] = expr
+		(last_node.op == '.' ); 							// c.m() = expr 
+		//(last_node.op == '.()' ); 							// c.M() = expr ??
+}
+
+
+function AssignMember(type_rhs)
+{
+	rvalue_pos++;
+	rvalue[rvalue_pos] = false;
+		
+	var delegatename = ast_postfix[ast_postfix.length-1].opts.delegatename;
 	
 	var type = Expression();
+	if(type == 5)
+		type = 6;
+	if(type !== type_rhs)
+		Error_parse("Deduced type '" + type_names[type] + "' is different from member type '" + type_names[type_rhs] + "'.");
 	
-	Delegate.return_stack.pop();
+	if(type == 6)  // handles assignment to delegate : d1 = f1, d2 = d1, d3 = m(...)
+	{
+		Delegate.Assign( type, ast_postfix[ast_postfix.length-1].opts.read_delegates , delegatename); 
+	}
 	
+	var ast_eq = ast_postfix_push('=', type, 2);
+	
+	if (rvalue[rvalue_pos]==false)
+	{
+		if (type==3)
+		{
+			ast_eq.opts.dubmat = true;
+		}
+		else if (type==4)
+		{
+			//javascript does not need copy for string but other virtual machines may need
+			//Emitln("asm_reg0_dub_s();");
+		}
+	}
+
+	
+	rvalue_pos--;
+	
+	return type;
+}
+
+function AssignVar(Name)
+{
+	rvalue_pos++;
+	rvalue[rvalue_pos] = false;
+	
+	var type = Expression();
+
+	var is_var_local = IsNewDefinition(Name);
+	
+	if(type == 5)
+		type = 6;
+	
+	if ( const_vars[Name] != undefined )
+	{
+		Error_parse("Can not change const value.")
+	}
+	
+	comp_define_var(Name, type);	
+	
+	if(type == 6)  // handles assignment to delegate : d1 = f1, d2 = d1, d3 = m(...)
+	{
+		var read_delegates = ast_postfix[ast_postfix.length-1].opts.read_delegates;		
+		Delegate.Assign(type, Delegate.GetMapName(read_delegates), Delegate.GetMapName(Name) );
+	}
+	
+	
+	if( comp_is_member(Name))
+	{
+		is_var_local = false;
+		
+		ast_postfix[0].opts.member_offset = cur_scope.vars_rel_pos[Name];
+	}
+	
+	
+	var ast_eq = ast_postfix_push('=', type, 2);
+	ast_eq.opts.define = is_var_local;
+	
+	if (rvalue[rvalue_pos]==false)
+	{
+		if (type==3)
+		{
+			ast_eq.opts.dubmat = true;
+		}
+		else if (type==4)
+		{
+			//javascript does not need copy for string but other virtual machines may need
+			//Emitln("asm_reg0_dub_s();");
+		}
+	}
+	
+
+	
+	rvalue_pos--;
+		
+	return type;
+}
+
+function AssignIndexed(sliced)
+{
+	var type;
+	
+	if (!sliced)   // a[0,2] = 5
+	{
+		type = Expression();
+		ast_postfix_push('[]=', type, 2);
+	}
+	else if (sliced) // a[0:1,2] = [0,1] or a[0,1:2] = [0;1] or a[0:1,1:2] = [0,1;3,4]
+	{
+		var ast_removed = ast_postfix.pop();
+		var mode = ast_removed.opts.mode;
+	    type = Expression();
+			
+		var ast = ast_postfix_push('[:]=', type, ast_removed.nodes.length + 1);
+		
+		if(mode == "cortex.getslice")
+			mode = "cortex.setslice";
+		else if(mode == "cortex.getcol")
+			mode = "cortex.setcol";
+		else if(mode == "cortex.getrow")
+			mode = "cortex.setrow";
+		ast.opts.mode = mode;
+	}
+	else 
+		Error_parse("Internal error subscribt");
+		
+	return type;
+}
+
+function AssignInplace(type)
+{
+	var op = Look;
+	Match(op);
+	Match('=');
+	
+	var Name = ast_postfix[ast_postfix.length-1].op;
+	
+	var rhs_type = Expression();
+	if(op == '+' || op == '-')
+	{
+		if(type != rhs_type && !(type==3 && rhs_type==2))
+			Error_parse( "Assignment types does not match : " + type_names[type] + ", " + type_names[rhs_type]);
+		if(type == 4 && op == '-')
+			Error_parse("Operation not supported on type : " + type_names[type]);
+		if(type != 2 && type !=3 && type != 4)
+			Error_parse("Operation not supported on type : " + type_names[type]);
+		ast_postfix_push(op + '=', type, 2);
+	}
+	else if(op == '*' || op == '/')
+	{
+		if(type == 2 && rhs_type == 2 || type == 3 && rhs_type == 3 && op == '*' || type == 3 && rhs_type == 2 && op == '*')
+		{
+			ast_postfix_push(op + '=', type, 2);
+		}
+		else
+			Error_parse("Operation not supported on types : " + type_names[type] + ", " + type_names[rhs_type]);
+		
+	}
+}
+
+function Expression()
+{
+	var last_index = ast_postfix.length;
+	
+	var type = BoolOr();
+	if((Look == '+' || Look == '-' || Look == '*' || Look == '/') && LookAhead() == '=')
+	{
+		AssignInplace( type );
+	}
+	else if(Look == '=')
+	{
+		Match('=');
+		
+		var last_node = ast_postfix[ast_postfix.length-1];
+		
+		if(IsAlpha(last_node.op[0])) // a = expr
+		{
+			var Name = last_node.op;
+			type = AssignVar(Name);
+		}
+		else if (last_node.op == '[]') // a[0,0] = expr
+		{
+			type = AssignIndexed(false);
+		}
+		else if (last_node.op == '.') // c1.m1 = expr
+		{
+			type = AssignMember(type);
+		}
+		else if ( last_node.op == '[:]') // a[0:1,2:3] = expr
+		{
+			type = AssignIndexed(true);
+		}
+		
+		if(type === 8) 
+			Error_parse("Delegates to methods not supported");
+	}
+	
+	if( IsAlpha(ast_postfix[ast_postfix.length-1].op[0]) && (type === 99999 || type ===undefined) )
+		Error_parse("Undefined variable : '" + ast_postfix[ast_postfix.length-1].op + "'.");
+		
+	return type;
+}
+
+//Parse and Translate an Expression
+function ExpressionNew()  // $$$ remove 
+{
+	var type = Expression();
+		
 	last_expression_type = type;
 	
 	return type;
 }
 
 //Parse and Translate an Expression
-function Expression()
+function BoolOr()
 {
 	var type;
 	
 	type = BoolTerm();
 	while (Look == '|' && LookAhead() == '|')
 	{
-		PushLast(type);
-		type = BoolOp(type, '||');
+		Match('|');Match('|');
+		
+		var rhs_type = BoolTerm();
+		
+		if(rhs_type != 1 || type != 1)
+			Error_parse('Boolean operations are supported only for boolean type');
+		
+		ast_postfix_push('||', type, 2);
 	}
 	
 	
@@ -1406,10 +1818,9 @@ function Term()
 {
 	var type;
 	
-	type = SignedFactor();
-	while (Look == '*' || Look == '/' || (Look == '.' && LookAhead() == '*')|| (Look == '.' && LookAhead() == '/'))
+	type = Unary();
+	while ( (Look == '*' && LookAhead()!= '=' ) || (Look == '/' && LookAhead()!= '=' ) || (Look == '%' && LookAhead()!= '=' ) || (Look == '.' && LookAhead() == '*')|| (Look == '.' && LookAhead() == '/') )
 	{
-		PushLast(type);
 		switch (Look)
 		{
 		case '*':
@@ -1419,6 +1830,10 @@ function Term()
 		case '/':
 			type = MulDivOp(type,'/');
 			ast_postfix_push("/", type, 2);
+			break;
+		case '%':
+			type = MulDivOp(type,'%');
+			ast_postfix_push("%", type, 2);
 			break;
 		case '.':
 			var op = '.' + LookAhead();
@@ -1438,8 +1853,8 @@ function Term()
 function Factor()
 {
 	var type;
-		
-	if (Look == '(')
+
+	if (Look == '(' && !IsLambdaExpr() ) // IsLambdaExpr is for skipping lambda expression ex: (x,y) => x+y or ( )
 	{
 		Match('(');
 		type = Expression();
@@ -1447,84 +1862,53 @@ function Factor()
 		
 		Match(')');
 	}
-	else if (IsAlpha(Look))
-	{
-		type = Ident();
-	}
-	else if (Look == '[')
-	{
-		Match('[');
-		GetMatrix(false);
-		Match(']');
-		type = 3;
-	}
-	else if (Look == '@' && LookAhead() == '[')
-	{
-		Match('@');
-		Match('[');
-		GetMatrix(true);
-		Match(']');
-		type = 3;
-	}
-	else if (Look == '"')
-	{
-		type = 4;
-		GetChar();
-		var str = EscapeString(GetString());
-		Emitln("asm_reg0 = \"" + str + "\";");
-		ast_postfix_push( '"' + str + '"', type, 0);
-		Match('"');
-	}
 	else
-	{
-		var num = GetNum();
-		Emitln("asm_reg0_real =" + num + ";");
-		type = 2;
+		type = Ident();
 		
-		ast_postfix_push(num, type, 0);
-	}
-
 	return type;
 }
 
 
-function SignedFactor()
+function Unary()
 {
 	var type;
 	
-	if (Look == '+' && LookAhead() != '+')
+	if (Look == '+' && LookAhead() != '+' && LookAhead() != '=' )
 	{
 		GetChar();
 	}
-	if (Look == '-' && LookAhead() != '-') //unary
+	else if (Look == '-' && LookAhead() != '-' && LookAhead() != '=') //unary
 	{
 		GetChar();
 		if (IsDigit(Look))
 		{	
 			var num = -GetNum(); // ex : a = 2*-2 
-			Emitln("asm_reg0_real = " + num +";");
 			type = 2;
 			
-			ast_postfix_push(num, 2 , 0, "SignedFactor");
+			ast_postfix_push(num, 2 , 0, "Unary");
 		}
 		else
 		{
-			Emitln("asm_reg1_real = 0");
-			
-			
-			ast_postfix_push('0', 2 , 0, "SignedFactor");
+			ast_postfix_push('0', 2 , 0, "Unary");
 			
 			type  = Transpose();
-			if(type == 2)
-				Emitln("asm_sub_real();");
-			else if(type == 3)
-				Emitln("asm_sub_rm();");
-			else
+			if(type != 2 && type != 3)
+			if(type != 2 && type != 3)
 				Error_parse("Unary '-' only supported for reals and matrices");
 			
-			ast_postfix_push('-', type , 2, "SignedFactor");
-			ast_postfix_push("(", type , 1, "SignedFactor");
+			ast_postfix_push('-', type , 2, "Unary");
+			ast_postfix_push("(", type , 1, "Unary");
 		}
+	}
+	else if (Look == '!') 
+	{
+		Match('!');
+		type = Transpose();
+		
+		if(type != 1)
+			Error_parse('Boolean operations are supported only for boolean type');
+		
+		ast_postfix_push('!', type, 1);
 	}
 	else
 	{
@@ -1536,13 +1920,19 @@ function SignedFactor()
 
 
 
-function FuncCall(Name, IsCmd, IsDelegate)
+function FuncCall(Name, IsCmd, IsDelegate, IsMethod)
 {
 	var count = 0;
 	var params_type=new Array();
 	var params_delegate=new Array();
 	
-		
+	if(IsMethod !== undefined)
+	{
+		params_type[count] = IsMethod;
+		params_delegate[count] = undefined;
+		count++;
+	}
+	
 	if(!IsCmd)
 	{
 		Match('(');
@@ -1550,11 +1940,8 @@ function FuncCall(Name, IsCmd, IsDelegate)
 		// parse function params
 		while( Look != ')')
 		{
-			Delegate.return_stack.push([]);
 			params_type[count] = Expression();
-			params_delegate[count] = Delegate.LastReturnStack();
-			Delegate.return_stack.pop();
-			PushLast(params_type[count]);
+			params_delegate[count] = ast_postfix[ast_postfix.length-1].opts.read_delegates;
 			count++;
 			if (Look != ')')
 				Match(',');
@@ -1568,12 +1955,15 @@ function FuncCall(Name, IsCmd, IsDelegate)
 		{
 			params_type[count] = 4;
 			var param_name = GetName();
-			Emitln('asm_reg0 = "' + param_name + '"');
 			ast_postfix_push( '"' + param_name + '"', 4, 0);
-			PushLast(params_type[count]);
 			count++;
 		}
 	}
+	
+
+	var func_desc = user_func_codes[Name + ':' + count];
+	if(IsMethod && func_desc) 
+		func_desc.isMethod = IsMethod;
 	
 	var return_types;
 	var return_delegates = {};
@@ -1584,32 +1974,34 @@ function FuncCall(Name, IsCmd, IsDelegate)
 		return_types = LinkDelegation(Name, count, params_type, return_delegates, params_delegate);
 	}
 	
-	Delegate.return_stack[Delegate.return_stack.length-1] = Delegate.return_stack[Delegate.return_stack.length-1].concat(return_delegates.delegates);
-	
 	var func_name = GetLinkFunctionName(Name, params_type, count);
+	
+	
+	if(func_desc && func_desc.isClassDef)	
+		func_name += "_ctor";	
 	
 	if(!IsDelegate)
 	{
-		Emitln('asm_func_' + func_name + "();");
-				
-		var ast_node = ast_postfix_push("()", return_types[0], count);
-		ast_node.opts.fname = 'asm_func_' + func_name;
+		var ast_node = ast_postfix_push("()", return_types[0], count + 1);
+		ast_node.opts.fname = '_' + func_name;
 	}
 	else
 	{
-		var is_global = cur_scope == undefined || cur_scope.get_var_type(Name) == undefined;
-		var full_name = is_global ? Name : cur_scope.name + "_" + Name;
 		var suffix = GetFtableFuncName( params_type, count, return_types );
-		EmitReadVar(Name, 6);
-		Emitln("asm_fjump_table_" + suffix + "(asm_reg0);//asm_call_reg0();");
-		
-		var ast_node = ast_postfix_push("()", return_types[0], count);
-		ast_node.opts.fname = "asm_fjump_table_" + suffix + "("+ Name + ")";
+		var ast_node = ast_postfix_push("()", return_types[0], count + 1);
+		if (Name.indexOf("_temp_delegate") == 0)
+		{
+			ast_node.opts.fname = "asm_fjump_table_" + suffix;
+			ast_node.opts.tempdelegate = true;
+		}
+		else
+			ast_node.opts.fname = "asm_fjump_table_" + suffix + "("+ Name + ")";
 	}
 	
 	ast_node.opts.multireturn = return_types.length > 1;
-	
-	//Delegate.return_stack = "";
+	ast_node.opts.return_delegates = return_delegates;
+	ast_node.opts.read_delegates = return_delegates.delegates;
+	ast_node.opts.ctor = func_desc && func_desc.isClassDef;
 
 	return return_types;
 }
@@ -1617,8 +2009,7 @@ function FuncCall(Name, IsCmd, IsDelegate)
 function LinkDelegation(Name, count, params_type, return_delegates, params_delegate)
 {
 	var return_types;
-	var is_global = cur_scope == undefined || cur_scope.get_var_type(Name) == undefined;
-	var full_name = is_global ? Name : cur_scope.name + "_" + Name;
+	var full_name = Delegate.GetMapName( Name );
 	return_types = LinkFunc(Delegate.map[full_name][0], count, params_type, return_delegates, params_delegate);
 	
 	Delegate.to_be_linked.push({ Name : full_name, count : count, param_types : params_type, return_delegates : return_delegates, params_delegate : params_delegate, return_types :return_types});
@@ -1637,7 +2028,6 @@ function LinkDelegateFunctions()
 {
 	for(var i =0;i< Delegate.to_be_linked.length; i++)
 	{
-		//Delegate.to_be_linked.push({ Name : full_name, count : count, param_types : params_type, return_delegates : return_delegates, params_delegate : params_delegate});
 		var full_name = Delegate.to_be_linked[i].Name;
 		var count = Delegate.to_be_linked[i].count;
 		var params_type  = Delegate.to_be_linked[i].param_types;
@@ -1656,14 +2046,11 @@ function LinkDelegateFunctions()
 				Delegate.ftable_funcs[suffix] = [];
 		
 			Delegate.ftable_funcs[suffix][Delegate.map[full_name][k]] = const_vars[Delegate.map[full_name][k]];
-			
-			//if (r_s.toString() != return_types.toString())
-				//Error_parse("Return type of delegate is different for functions :'" + delegate_map[Name][0] + "' and '" + delegate_map[Name][k] + "'");
 		}
 	}
 }
 
-function StringIndexer(Name)
+function StringIndexer()
 {
 	Match('[');
 	var type = Expression();
@@ -1673,23 +2060,12 @@ function StringIndexer(Name)
 	{
 		Error_parse("Invalid indexer type.");
 	}
-	
-	PushLast(type);
-	
-	EmitReadVar(Name, type);
-	
-	PushLast(type);	
 }
 
 // A[1, :]
 function IndexerOnlyColon(multiple, isrow)
 {
 	Match(':');
-		
-	Emitln("asm_reg0_real = 0;");
-	PushLast(2);
-	Emitln("asm_reg0_real = -1;");
-	PushLast(2);
 	
 	ast_postfix_push("0", 2, 0, "IndexerOnlyColon");
 	ast_postfix_push("-1", 2, 0, "IndexerOnlyColon");
@@ -1708,14 +2084,12 @@ function IndexerOnlyColon(multiple, isrow)
 function IndexColonRange(multiple, isrow)
 {
 	Match(':');
-	var type = Expression();
+	var type = ArithmeticExpr();
 
 	if (type!=2)
 	{
 		Error_parse("Invalid indexer type.");
 	}
-	
-	PushLast(type);
 	
 	if (isrow)
 		multiple = 100; 
@@ -1727,7 +2101,7 @@ function IndexColonRange(multiple, isrow)
 	return multiple;
 }
 
-function MatrixIndexer(Name)
+function MatrixIndexer()
 {
 	var vector = false; //,mode;
 	var multiple = 0;
@@ -1742,14 +2116,12 @@ function MatrixIndexer(Name)
 	}
 	else
 	{
-		type = Expression();
+		type = ArithmeticExpr();
 		
 		if (type!=2)
 		{
 			Error_parse("Invalid indexer type.");
 		}
-		
-		PushLast(type);
 		
 		if (Look == ':')
 		{
@@ -1782,11 +2154,10 @@ function MatrixIndexer(Name)
 	{
 		if (!vector)
 		{
-			type = Expression();
+			type = ArithmeticExpr();
 		}
 		else
 		{
-			Emitln("asm_reg0_real = 0;");
 			ast_postfix_push("0", 2, 0);
 			type = 2;
 		}
@@ -1795,8 +2166,6 @@ function MatrixIndexer(Name)
 		{
 			Error_parse("Invalid indexer type.");
 		}
-
-		PushLast(type);	
 		
 		if (Look == ':')
 		{
@@ -1804,164 +2173,118 @@ function MatrixIndexer(Name)
 		}
 	}
 	
-	EmitReadVar(Name, 3);
-	
-	PushLast(3);
-	
 	if (!vector)
 		Match(']');
 		
 	return multiple;
 }
 
-function MemberAccess()
+function ObjectDefs(name, members)
 {
-	
+	this.name = name;
+	this.members = members;
 }
 
-function Ident()
+function DefineClass(className, members, methods)
 {
-	var Name = GetName();
-	
-	while(Look == '.' && (LookAhead() != '*' && LookAhead() != '/'))
+	var prevDef = cortexParser.getObjectType( className );
+	if(prevDef == -1)
 	{
-		GetChar();
-		Name += '.' + GetName();
-	}
-
-	var type = comp_try_get_var_type(Name);
-	
-	if (Look == '(')
-	{
-		if (type == 6)  // check if function delegate
-		{
-			type = FuncCall(Name, false, true);
-		}
-		else
-		{
-			var return_types = FuncCall(Name);
-			ClearUnusedParams(return_types, 1, return_types.length);
-			type = return_types[0];
-		}
-	}
-	else if (Look == '[')
-	{
-		type = comp_get_var_type(Name);
+		type_names[ ObjectList.length + 101 ] = className;
+		ObjectList.push( { name : className, members : members, methods : methods } );
 		
-		if (type==4)
-		{
-			StringIndexer(Name);
-			Emitln("asm_string_get_elm();");
-			type = 2;
-		}
-		else if (type==3)
-		{
-			var multiple = MatrixIndexer(Name);
-			
-			if( Look == '=' && !IsRelop(Look, LookAhead()))
-			{
-				type = AssignmentOp(Name, true, multiple);
-			}
-			else
-			{
-				if (!multiple)
-				{
-					Emitln("asm_matrix_get_elm();");
-					
-					ast_postfix_push( Name, 3, 0);
-					ast_postfix_push( "[]", 2, 3);
-					
-					type = 2;
-				}
-				else
-				{
-					ast_postfix_push(Name, 3, 0);
-				
-					switch(multiple)
-					{
-						case 102:
-							Emitln("asm_matrix_get_slice();");
-							var ast = ast_postfix_push("[:]", type, 5, "asm_matrix_get_slice()");
-							ast.opts.mode = "cortex.getslice";
-							break;
-						case 100:
-							Emitln("asm_matrix_get_slice(1); // col ");
-							var ast = ast_postfix_push("[:]", type, 4, "asm_matrix_get_slice(1)");
-							ast.opts.mode = "cortex.getcol";
-							break;
-						case 101:
-							Emitln("asm_matrix_get_slice(2); // row");
-							var ast = ast_postfix_push("[:]", type, 4, "asm_matrix_get_slice(2)");
-							ast.opts.mode = "cortex.getrow";
-							break;
-					}
-					
-					rvalue[rvalue_pos] = true;
-					type = 3;
-				}
-			}
-		}
-		else
-			Error_parse("Indexer [] operator only works for matrices and strings.");
+		return cortexParser.getObjectType( className );
 	}
 	else
 	{
-		if( Look == '=' && !IsRelop(Look, LookAhead()))
-		{
-			type = AssignmentOp(Name, false, 0);
-		}
-		else if( Look == '+' && LookAhead() == '+')
-		{
-			Match("+");
-			Match("+");
-			type = IncDecOpPostfix(Name, '+');
-		}
-		else if( Look == '-' && LookAhead() == '-')
-		{
-			Match("-");
-			Match("-");
-			type = IncDecOpPostfix(Name, '-');
-		}
-		else
-		{
-			type = comp_get_var_type(Name);
-			
-			EmitReadVar(Name, type);
-			ast_postfix_push(Name, type, 0);
-			
-			if (type == 5 || type == 6)
-			{
-				Delegate.return_stack[Delegate.return_stack.length-1] = [Name];
-			}
-		}
+		cortexParser.getObjectDef(prevDef).members = members;
+		cortexParser.getObjectDef(prevDef).methods = methods;
+		return prevDef;
 	}
+}
 
+cortexParser.isObject = function(type)
+{
+	return type >= 101 && type <= 101 + ObjectList.length
+	
+}
+
+cortexParser.getObjectType = function(name)
+{
+	for(var i = 0; i < ObjectList.length; i++)
+	{
+		if(ObjectList[i].name === name)
+			return i + 101;
+	}
+	
+	return -1;
+}
+
+cortexParser.getObjectDef = function(type)
+{
+	if(!cortexParser.isObject(type))
+		Error_parse("Object is not defined: " + type);
+	
+	return ObjectList[type-101];
+}
+
+function ModuleResolution()
+{
+	if ( !( ast_postfix.length > 0 && IsAlpha(ast_postfix[ast_postfix.length-1].op[0])))
+		Error_parse("Module name expected");
+	
+	var lib_name = ast_postfix[ast_postfix.length-1].op;
+	ast_postfix.pop();
+	Match('.');
+	
+	return Ident(lib_name);;
+}
+
+function MemberAccess(type)
+{
+	Match('.');
+	var MemberName = GetName();
+	
+	var objDesc = cortexParser.getObjectDef(type);
+	if(!objDesc)
+		Error_parse("Invalid class");
+
+	var memberDesc = objDesc.members[MemberName];
+	if(memberDesc)
+	{
+		var memberType = memberDesc[0];
+	
+		ast_postfix_push(memberDesc[1] , 2, 0);
+		var ast = ast_postfix_push(".", memberType, 2);
+		ast.opts.delegatename = objDesc.name + "/" + MemberName;
+
+		type = memberType;
+
+		ast.opts.read_delegates = [ objDesc.name + "/" + MemberName ];
+	}
+	else
+	{
+		var return_types = MethodCall(objDesc, MemberName, type);
+		type = return_types;
+	}
+	
 	return type;
 }
 
-function PopReg0(type)
+function MethodCall(objDesc, methodName, objType)
 {
-	if(type == 1 || type == 2)
-		Emitln("asm_pop_real();");
-	else
-		Emitln("asm_pop();");
-}
+	var methodDesc = objDesc.methods ? objDesc.methods[methodName] : undefined;
+	if(methodDesc === undefined)
+		Error_parse("Object does not have a method or member : '" + methodName + "'");
 
-function PopReg1(type)
-{
-	if(type == 1 || type == 2)
-		Emitln("asm_pop1_real();");
-	else
-		Emitln("asm_pop1();");
-}
-
-function PushLast(type)
-{
-	if(type == 1 || type == 2)
-		Emitln("asm_push_real();");
-	else
-		Emitln("asm_push();");
+	var  func_desc_name = objDesc.name + "_method_" +  methodName;
+	var return_types = FuncCall( func_desc_name, false, false, objType );
+	ClearUnusedParams(return_types, 1, return_types.length);
 	
+	var ast = ast_postfix[ast_postfix.length-1];
+	ast.op = ".()";
+	ast.nodes.pop();
+	return return_types;
 }
 
 function VariableScope(use_heap)
@@ -1978,28 +2301,29 @@ function VariableScope(use_heap)
 	
 	this.for_while_track = new Array();
 	
-	this.returned_delegates = new Array();
+	this.global_promoted = {};
+	this.local_enforced = {};
+	this.members_pos = 0;
 	
 	this.define_var = function(name, type)
 	{
 		for(var i=0;i<keywords.length;i++)
 			if (keywords[i] == name)
 				Error_parse("Can not define reserved words as variables");
+		//cortex.print("define_var : " + name + " : " + type + "  " + (this == global_scope));
 			
 		if(this.vars[name]===undefined)
 		{
 			this.vars[name] = 0;
 			
-			this.vars_rel_pos[name] = this.stack_rel_pos++;
-			
-			if(use_heap)
-				;//Emitln("asm_heap_pointer++;");
+			if(this.isConstructor && !this.local_enforced[name])
+				this.vars_rel_pos[name] = this.members_pos++;
 			else
-				Emitln("asm_sp++;");
+				this.vars_rel_pos[name] = this.stack_rel_pos++;
 		}
 		else
 		{
-			if(this.vars_deduced[name]!==undefined && this.vars_deduced[name] != type)
+			if(this.vars_deduced[name]!==undefined && this.vars_deduced[name] != type && this.vars_deduced[name] !== 99999)
 			{		
 				Error_parse("Deduced type is different from previous defined type : '" + name + "'.");
 			}	
@@ -2014,7 +2338,7 @@ function VariableScope(use_heap)
 		for(var i=0;i<keywords.length;i++)
 			if (keywords[i] == name)
 				Error_parse("Can not define reserved words as variables");
-				
+		//cortex.print("define_param : " + name + " : " + type);
 		if(this.vars[name]===undefined)
 		{
 			this.vars[name] = 0;
@@ -2033,9 +2357,22 @@ function VariableScope(use_heap)
 		this.vars_deduced[name] = type;
 	}
 	
-	this.get_var_type = function(name)
+	this.get_local_var_type = function(name)
 	{
 		return this.vars_type[name];
+	}
+	
+	this.get_var_type = function(name)
+	{
+		var var_type = this.vars_type[name];
+		
+		if(var_type === undefined && this.members !== undefined && this.members[name] !==undefined)
+			return this.members[name][0];
+		
+		if(var_type === undefined && this.methods !== undefined && this.methods[name] !==undefined)
+			return 8;
+		
+		return var_type;
 	}
 	
 	this.clear_all = function()
@@ -2055,14 +2392,6 @@ function VariableScope(use_heap)
 		
 		delete this.vars_deduced[name]; 
 	}
-	
-	/*this.get_var_value = function(name, type)
-	{
-		if(!use_heap)
-			Error_parse("Internal error. Heap")
-			
-		return heap[this.vars_rel_pos[name]];
-	}*/
 }
 
 
@@ -2070,11 +2399,9 @@ function ArithmeticExpr()
 {
 	var type;
 	
-	if (IsAddop(Look) && Look != LookAhead())
+	if (IsAddop(Look) && Look != LookAhead() && LookAhead() != '=')
 	{
 		type = 2;
-		Emitln("asm_reg0_real = 0;");
-		
 		ast_postfix_push('0', 2 , 0, "ArithmeticExpr");
 	}
 	else
@@ -2082,9 +2409,8 @@ function ArithmeticExpr()
 		type = Term();
 	}
 
-	while ( (Look == '+' && LookAhead() !='+') || (Look == '-' && LookAhead() !='-') )
+	while ( (Look == '+' && LookAhead() !='+' && LookAhead() != '=') || (Look == '-' && LookAhead() !='-' && LookAhead() != '=') )
 	{
-	    PushLast(type);
 		switch (Look)
 		{
 		case '+':
@@ -2104,53 +2430,145 @@ function ArithmeticExpr()
 }
 
 
-// parse function params
-function FunctionParams(func_desc)
+function FunctionMultiReturn(func_desc)
 {
-	Match('(');
+	Match('[');
+	func_desc.multiassign_names = GetNameList(',' , ']', true);
+	func_desc.multiassign_count = func_desc.multiassign_names.length;
 	
-	func_desc.proto_param_count = 0;
-	func_desc.proto_param_names = new Array();
-	while( Look != ')')
-	{		   
-	   func_desc.proto_param_names[func_desc.proto_param_count] = GetName();
-	   
-	   func_desc.proto_param_count++;
-	   if (Look != ')')
-	   {
-		 Match(',');
-	   }
-	}
-	Match(')');
+	Match(']');
+	Match('=');
 }
 
-function DoFunction()
+// Parses function name, prototype and body and stores them. Does not compile function body(DoFunctionLink compiles)
+function DoFunction(isClassDef, isAnon)
 {
+	var func_desc = {};
+	
 	var braces = 1;
 	
-	var rtype_name = GetName();
+	var rtype_name = isAnon ? "function" : GetName();
 	var rtype = 2;
 	
 	if (rtype_name != "function")
-		for (var i=0;i<types.length;i++)
-			if (types[i] == rtype_name) rtype = i;
+		for (var i=0;i<type_names.length;i++)
+			if (type_names[i] == rtype_name) rtype = i;
 	
+	var multiassign = ( Look == '[') && !isClassDef;
 	
-	var func_desc = {};
+	if(multiassign)
+		FunctionMultiReturn(func_desc);	
 	
-	var Name = GetName();
+	var Name;
+	if(isAnon)
+		Name = "_anonymous_" + (anonymous_uid++);
+	else
+		Name = GetName();
 	
-	FunctionParams(func_desc);
+	if(current_module_name.length > 0)
+		Name += '$' + current_module_name;
+		
+	Match('(');
+	func_desc.proto_param_names = GetNameList(',', ')' , false);
+	func_desc.proto_param_count = func_desc.proto_param_names.length;
+	Match(')');
+	
+	var lambda_form = false;
+	if( Look == '=' && LookAhead() == '>')
+	{	
+		Match('='); 
+		Match('>'); 
+		lambda_form = true;
+	}
+	else
+		Match('{');
+	
+	func_desc.name = Name;	
+	func_desc.module_name = current_module_name;
+	
+	if(!lambda_form || Look == '{')
+	{
+		func_desc.code = (lambda_form ? "" : "{ ") + Look;
+		func_desc.code_pos = inp_pos - 3; // used for error reporting only
+		
+		while(true)  // bug : what happens when comments contain { or } ?
+		{
+			GetChar();
+			func_desc.code += Look;
+			
+			if (Look =='{')
+			{
+			   braces++;
+			}
+			else if (Look=='}')
+				braces--;
+			
+			if(braces==0)
+				break;
+			
+			if(end_of_prog)
+				Error_parse("Unexpected end of file.");
+		}
+		Match('}');
+	}
+	else
+	{
+		func_desc.code = "{ return " + Look;
+		func_desc.code_pos = inp_pos - 11; // used for error reporting only
+
+		while(true)  // bug : what happens when comments contain { or } ?
+		{
+			GetChar();
+			func_desc.code += Look;
+			
+			if(end_of_prog)
+				Error_parse("Unexpected end of file.");
+				
+			if (Look ==';')
+			{
+				//Match(';');
+				break;
+			}
+		}
+		func_desc.code += '}';
+	}
+	
+	if(cur_scope && cur_scope.isConstructor && !isAnon)
+	{
+		if(cur_scope.defined_members === undefined)
+			cur_scope.defined_members = {};
+		cur_scope.defined_members[Name] = "member";
+		func_desc.proto_param_count++;
+		func_desc.proto_param_names.unshift("_this");
+		
+		DefineFunction(cur_scope.name + "_method_" + Name, func_desc, rtype);
+	}
+	else
+	{
+		if(cur_scope && !isAnon)
+		{
+			Error_parse("Inline functions are not supported.");
+		}
+		
+		func_desc.isClassDef = (isClassDef === true);
+		
+		DefineFunction(Name, func_desc, rtype);
+	}
+}
+
+function DoModule()
+{
+	GetName();
+	var module_name = GetName();
+	var module_code = "";
+	var braces = 1;
 	
 	Match('{');
 	
-	func_desc.code = "{ " + Look;
-	func_desc.code_pos = inp_pos - 3; // used for error reporting only
-	
 	while(true)  // bug : what happens when comments contain { or } ?
 	{
+		module_code += Look;		
 		GetChar();
-		func_desc.code += Look;
 		
 		if (Look =='{')
 		{
@@ -2165,47 +2583,79 @@ function DoFunction()
 		if(end_of_prog)
 			Error_parse("Unexpected end of file.");
 	}
+		
+	//module_code += '}';
 	
 	Match('}');
 	
-	if(cur_scope)
-	{
-		Error_parse("Inline functions are not supported.");
-	}
-	
+	DoImport(module_code, module_name);
+}
+
+function DefineFunction(Name, func_desc, rtype)
+{
 	var func_desc_name = Name + ':' + func_desc.proto_param_count;
+	
 	if (user_func_codes[func_desc_name] != undefined)
 		Error_parse("Function already defined: '" + Name + "'.");
 	
 	user_func_codes[func_desc_name] = func_desc;
 	
 	comp_define_var_const(Name, function_list.length , 5);
-	function_list.push( new FunctionDefs(Name, [], [rtype] , "user", true) );
+	function_list.push( new FunctionDefs(Name, new Array(func_desc.proto_param_count), [rtype] , "user", true) );
+}
+
+function SaveCompileState()
+{
+	var state = {};
+	state.old_inp = inp;
+	state.old_inp_pos = inp_pos;
+	state.old_look = Look;
+	state.old_indent = cur_indent;	
+	state.report_pos_old = report_pos;
 	
+	return state;
+}
+
+function RestoreCompileState( state )
+{
+	inp = state.old_inp;
+	inp_pos = state.old_inp_pos;
+	Look = state.old_look;
+	cur_indent = state.old_indent;
+	report_pos = state.report_pos_old;
+	end_of_prog = false;
 }
 
 function DoFunctionLink(func_name, func_desc, params_count, params_type, return_delegates, params_delegate)
 {
-	var old_inp = inp;
-	var old_inp_pos = inp_pos;
-	var old_look = Look;
-	var param_description = "";
+	var old_compile_state = SaveCompileState();
+	var old_func_name; // for reporting
 	
 	inp = func_desc.code;
 	inp_pos = 0;
 	end_of_prog = false; 
+	cur_indent = 0;
+	report_pos = func_desc.code_pos; // for reporting
+	old_func_name = cortexParser.current_function_name; // for reporting
+	cortexParser.current_function_name = func_desc.name; // for reporting
+	cortexParser.current_module_name_link = func_desc.module_name; // for reporting
+	
+	var param_description = "";
 	
 	GetChar();
 	SkipWhite();
 	
-	var js_def = 'function asm_func_' + func_name + '(';
+	if (func_desc.isClassDef) 	
+	   var js_def = 'function _' + func_name + '_ctor( ';
+	else
+	   var js_def = 'function _' + func_name + '(';
 	
 	for(var i=0;i < params_count; i++)
 	{
 	   if (i != 0)
 		  js_def += ' , ';
 	   js_def += func_desc.proto_param_names[i];
-	   param_description += types[ params_type[ i] ] + " ";
+	   param_description += type_names[ params_type[ i] ] + " ";
 	}
 	
 	if ( func_desc.proto_param_count != params_count)
@@ -2213,81 +2663,226 @@ function DoFunctionLink(func_name, func_desc, params_count, params_type, return_
 		Error_parse("Invalid number of parameters.");
 	}
 	
-	var compiled_js_saved = compiled_asm;
-	var compiled_js_test_saved = compiled_js_test;
+	var compiled_js_saved = compiled_js;
+	var compiled_c_saved = compiled_c;
 	var ast_postfix_saved = ast_postfix.slice(); // dublicate
 	
-	compiled_asm = "";
-	compiled_js_test = "";
+	compiled_js = "";
+	compiled_c = "";
 	ast_postfix = new Array();
 	
 	Emitln_ast( js_def + ')    // ' + param_description + '\n{');
-	
-	Emitln( 'function asm_func_' + func_name + '()  // ' + param_description);
-	Emitln( '{');
-	
+	IncIndent();
 	
 	cur_scope = new VariableScope();
 	cur_scope.name = func_name;
+	if (func_desc.isClassDef) 
+	   cur_scope.isConstructor = true;
+	if (func_desc.isMethod)
+		cur_scope.this_type = func_desc.isMethod;
 	scope_stack.push(cur_scope);
 	
-	Delegate.return_stack.push([]);
-	
+	if(func_desc.isMethod != undefined)
+	{	
+		var objDesc = cortexParser.getObjectDef(func_desc.isMethod);
+		cur_scope.members = objDesc.members;
+		cur_scope.methods = objDesc.methods;
+	}
+		
 	for(var i=0;i < params_count; i++)
 	{
-		
 		if(params_type[i] == 5 || params_type[i] == 6)
 		{
 			cur_scope.define_param(func_desc.proto_param_names[i], 6, -params_count-1 +i);
-			Delegate.Assign(params_type[i], params_delegate[i], func_desc.proto_param_names[i]);
+			Delegate.Assign(params_type[i], params_delegate[i], func_desc.proto_param_names[i]); 
 		}
 		else
 		{
 			cur_scope.define_param(func_desc.proto_param_names[i], params_type[i], -params_count-1 +i);
 		}
+	}
+	
+	var rtype;
+	
+	if(func_desc.isClassDef) // class cName(a,b) { .. } 
+	{
+	    Emitln_ast("var _this = new Array(");
+		var size_pos_js = compiled_js.length - 1;
+		var size_pos_c = compiled_c.length - 1;
+		
+		StatementBlock();
+		if (cur_scope.return_type !== undefined)
+			Error_parse("No return allowed in class constructor.");
+		
+		// we can determine the size of class after statement block. so we have to insert size afterwards
+		compiled_js = [compiled_js.slice(0, size_pos_js), cur_scope.members_pos + ");", compiled_js.slice(size_pos_js)].join(''); 
+		compiled_c = [compiled_c.slice(0, size_pos_c), cur_scope.members_pos + ");", compiled_c.slice(size_pos_c)].join(''); 
+		
+		var type_id = DoClassDef(func_name);
+		
+		Emitln_ast("return _this;");
+		cur_scope.return_type = type_id;
+	}
+	else
+	{
+		if (func_desc.multiassign_count)
+		{
+			for(var i=0; i < func_desc.multiassign_count; i++)
+			{
+				cur_scope.define_var(func_desc.multiassign_names[i], 99999); 
+			}
+		}
+		
+		if (!StatementBlock())
+		{
+			if (!func_desc.multiassign_count)
+			{
+				if (cur_scope.return_type == undefined || cur_scope.return_type == 2)
+					DoReturn(true); // assume return 0 if previously not defined or previously defined as real
+				else
+					Error_parse("Not all code paths return a value.");
+			}
+		}
+	}
+	
+	if (func_desc.multiassign_count)
+    {
+		var ret_str = "return [";
+		
+	    if(cur_scope.return_type !== undefined)
+		    Error_parse("No return allowed in functions that has multiple return variables.");
+		
+		rtype = new Array(func_desc.multiassign_count);
+		return_delegates.delegates_multi = [];
+		
+		for(var i=0; i < func_desc.multiassign_count; i++)
+		{
+			rtype[i] = cur_scope.get_var_type(func_desc.multiassign_names[i]);
+			if(rtype[i] === 99999)
+				Error_parse("Variable is not assigned before returning from function : '" + func_desc.multiassign_names[i] + "'");
+			ret_str += func_desc.multiassign_names[i] + ((i == func_desc.multiassign_count-1) ? "" : ", ");
+			
+			if(Delegate.map[ cur_scope.name + "/" + func_desc.multiassign_names[i]])
+			{
+				Delegate.map[cur_scope.name + "/retDel" + (i == 0 ? "" : i)] = Delegate.map[ cur_scope.name + "/" + func_desc.multiassign_names[i]];
+				delete Delegate.map[ cur_scope.name + "/" + func_desc.multiassign_names[i]];
+			}
+			
+			return_delegates.delegates_multi[i] = Delegate.map[ cur_scope.name + "/retDel" + (i == 0 ? "" : i)];
+		}
+		
+		Emitln_ast(ret_str + "];");
+		
+		return_delegates.delegates = Delegate.map[ cur_scope.name + "/retDel"];
 		
 	}
-	
-	Emitln("asm_stack[asm_sp++] = asm_bp;");
-	Emitln("asm_bp = asm_sp;");
-	
-	if (!StatementBlock())
-	{
-		if (cur_scope.return_type == undefined || cur_scope.return_type == 2)
-			DoReturn(true); // assume return 0 if previously not defined or previously defined as real
-		else
-			Error_parse("Not all code paths return a value.");
+	else
+	{	
+		rtype = [cur_scope.return_type];
+		return_delegates.delegates = Delegate.map[ cur_scope.name + "/retDel"];
 	}
-	var rtype = cur_scope.return_type;
 	var rvalue = cur_scope.rvalue_all;
 	
-	return_delegates.delegates = Delegate.map[ cur_scope.name + "_retDel"];
-	
-	Delegate.return_stack.pop();
 	
 	scope_stack.pop();
 	if(scope_stack.length == 0)
 		cur_scope = undefined;
 	else
 		cur_scope = scope_stack[scope_stack.length-1];
-		
-	Emitln("}\n");
+
+	DecIndent();
 	Emitln_ast("}\n");
 	
-	functions_asm += compiled_asm;
-	compiled_asm = compiled_js_saved;
-	
-	functions_js_test += compiled_js_test;
-	compiled_js_test = compiled_js_test_saved;
+	functions_js += compiled_js;
+	functions_c += compiled_c;
+	compiled_js = compiled_js_saved;
+	compiled_c = compiled_c_saved;
 	ast_postfix = ast_postfix_saved.slice();
 	
-	end_of_prog = false; 
+	RestoreCompileState(old_compile_state);
+	cortexParser.current_function_name = old_func_name;
 	
-	Look = old_look;
-	inp = old_inp;
-	inp_pos = old_inp_pos;
+	return [ rtype, rvalue];
+}
+
+function DoClassDef(className)
+{
+    var members = {};
 	
-	return [ [rtype], rvalue];
+	var ind = 0;
+	for (var member_name in cur_scope.vars)
+	{
+		if (!cur_scope.vars.hasOwnProperty(member_name) || cur_scope.vars_rel_pos[member_name] < 0
+			|| cur_scope.global_promoted[ member_name ] || cur_scope.local_enforced[ member_name ])
+			continue;
+			
+		members[member_name] = [ cur_scope.vars_type[member_name], ind++];	
+	}
+	
+	var class_type = DefineClass(className, members, cur_scope.defined_members );
+	comp_define_var_const(className, "'" + className + "'" , class_type);
+	
+	return cortexParser.getObjectType(className);
+}
+
+function DoClassDefExNihilo()
+{
+	var className;
+	var members = {};
+	
+	if( Look != "{")
+		className = GetName();
+	else
+		className = "_anonymous_" + (anonymous_uid++);
+	
+	Match('{');
+	
+	var param_count = 0;
+	var proto_param_names = new Array();
+	var params_type = new Array();
+	var params_delegate=new Array();
+	var code = "{";
+	
+	ast_postfix_push(className, 5, 0);
+	while(Look != '}')
+	{
+		var member_name = GetName();
+		members[member_name] = [0,param_count];
+		Match(':');	
+		
+		params_type[param_count] = Expression();
+		if(Look == ';')
+			Match(';');
+		
+		params_delegate[param_count] = ast_postfix[ast_postfix.length-1].opts.read_delegates;
+		
+		code += member_name + " = _" + member_name + ";";
+		members[member_name][0] = params_type[param_count];
+		proto_param_names[param_count] = "_" + member_name;
+		
+		if(Look != '}')
+			Match(',');
+		param_count++;
+	}
+	code += ";}";
+	Match('}');
+
+	var func_name = GetLinkFunctionName(className, params_type, param_count);
+	var class_type_id = DefineClass(func_name, members, { } );
+	
+	var ast_node = ast_postfix_push("()", class_type_id, param_count + 1);
+	ast_node.opts.fname = '_' + func_name + "_ctor";
+	ast_node.opts.ctor = true;
+	
+	var func_desc = {code : code, name : func_name + "_ctor", proto_param_count: param_count, proto_param_names : proto_param_names, isClassDef : true, module_name : current_module_name};
+	DefineFunction(className, func_desc, class_type_id);
+	
+	var return_delegates = {};
+	LinkFunc(className , param_count, params_type, return_delegates, params_delegate);
+	
+	comp_define_var_const(className, "'" + className + "'" , class_type_id);
+	
+	return cortexParser.getObjectType(func_name);
 }
 
 function DoReturn(auto)
@@ -2301,7 +2896,6 @@ function DoReturn(auto)
 	if(auto)
 	{
 		var rtype = 2;
-		Emitln("asm_reg0_real = 0;");
 		ast_postfix_push("0", 2, 0);
 	}
 	else
@@ -2313,19 +2907,16 @@ function DoReturn(auto)
 
 	rvalue_pos--;
 	
-	Delegate.Assign( rtype, Delegate.LastReturnStack(), cur_scope.name + "_retDel");
-	 
+	if(rtype == 5) rtype = 6;
+	var read_delegates = ast_postfix[ast_postfix.length - 1].opts.read_delegates;	
+	Delegate.Assign( rtype, Delegate.GetMapName(read_delegates), cur_scope.name + "/retDel"); 	
+	
 	if (cur_scope.return_type != undefined && rtype != cur_scope.return_type)
 		Error_parse("Deduced return type is different from previous defined type.");
-		
+
 	cur_scope.return_type = rtype;
 
-	Emitln("asm_sp = asm_bp;\nasm_bp = asm_stack[--asm_sp];");
-	if (cur_scope.param_count_ref>0)
-		Emitln("asm_sp -= " + cur_scope.param_count_ref + ";");
-		
-	Emitln("return; // " + types[ rtype ]);
-	Emitln_ast("return "+ ast_generate_code(true) + "; //" + types[ rtype ]);
+	Emitln_ast("return "+ ast_generate_code(true) + "; //" + type_names[ rtype ]);
 	return rtype;	
 }
 
@@ -2337,32 +2928,28 @@ function DoIf()
 	var type = ExpressionNew();
 	
 	Emitln_ast("if (" + ast_generate_code(true) + "){");
-	if (type==1)
-	{
-		Emitln("if ( asm_reg0_real )\n{" );
-	} 
-	else if (type==2)
-	{
-		Emitln("if ( asm_reg0_real )\n{" );
-	}
-	else
+	if (type!=1 && type != 2)
 	{
 		Error_parse("Unsupported if condition");
 	}
 		
 	Match(')');
 	
+	IncIndent();
+	
 	var is_return_main = Statement();
+	
+	DecIndent();
 	
 	if (CheckAhead('else'))
 	{
-		Emitln("}\nelse\n{" );
-		Emitln_ast("}\nelse\n{" );
+		Emitln_ast("}\n"+ IndentSpaces() + "else\n"+ IndentSpaces() + "{" );
 		Match('e');Match('l');Match('s');Match('e');
 		
+		IncIndent();
 		var is_return_else = Statement();
+		DecIndent();
 	}
-	Emitln("}");
 	Emitln_ast("}");
 		
 	if (is_return_main && is_return_else)
@@ -2390,8 +2977,6 @@ function DoFor()
 	}
 	Match(';');
 	
-	Emitln("while(1) {");
-	
 	if(Look != ';')
 	{
 		var type_exp = ExpressionNew();
@@ -2404,25 +2989,13 @@ function DoFor()
 	
 	if(Look != ')')
 	{
-		var compiled_js_saved = compiled_asm;
-		compiled_asm = "";
 		ExpressionNew();
 		ast_for_next = ast_generate_code(true);
-		compiled_each = compiled_asm;
-		compiled_asm = compiled_js_saved;
 	}
 	
 	if (type_exp !== undefined)
 	{
-		if (type_exp==1)
-		{
-			Emitln("if ( !asm_reg0_real )\n\tbreak;" );
-		} 
-		else if (type_exp==2)
-		{
-			Emitln("if ( !asm_reg0_real )\n\tbreak;" );
-		}
-		else
+		if (type_exp!=1 && type_exp !=2)
 			Error_parse("Unsupported if condition");
 	}
 	var scope = get_scope();
@@ -2431,9 +3004,9 @@ function DoFor()
 	Emitln_ast(ast_for_init + "; // for init\nfor( ; " + ast_for_cond + "; " + ast_for_next + ") {");
 	
 	Match(')');
+	IncIndent();
 	Statement();
-	compiled_asm += compiled_each;
-	Emitln("}\n");
+	DecIndent();
 	Emitln_ast("}\n");
 	
 	scope.for_while_track.pop();
@@ -2442,20 +3015,13 @@ function DoFor()
 function DoWhile()
 {	
 	Match('(');
-	Emitln("while(1) {");
 	var type = ExpressionNew();
 	
 	Emitln_ast("while (" + ast_generate_code(true) + "){");
 	
-	if (type==1)
-	{
-		Emitln("if ( !asm_reg0_real )\n\tbreak;" );
-	} 
-	else if (type==2)
-	{
-		Emitln("if ( !asm_reg0_real )\n\tbreak;" );
-	}
-	else
+	IncIndent();
+	
+	if (type!=1 && type != 2)
 	{
 		Error_parse("Unsupported if condition");
 	}
@@ -2465,7 +3031,8 @@ function DoWhile()
 	
 	Match(')');
 	Statement();
-	Emitln("}\n");
+	DecIndent();
+	
 	Emitln_ast("}\n");
 	
 	scope.for_while_track.pop();
@@ -2486,14 +3053,10 @@ function DoLoop(is_zero_begin)
 		var begin_ast_js = ast_generate_code(true);
 		
 		comp_define_var(Name, exp_type_begin);
-		EmitWriteVar(Name, exp_type_begin);
 	}
 	else
 	{
 		comp_define_var(Name, 2);
-		Emitln("asm_reg0_real = 0;")
-		EmitWriteVar(Name, 2);
-		//Emitln("asm_set_var( \"" + Name + "\",0 , " + 2 + " );");	
 	}
 	
 	var type = comp_get_var_type(Name);
@@ -2501,22 +3064,12 @@ function DoLoop(is_zero_begin)
 	if (type!=2)
 		Error_parse("Real type expected.");
 	
-	
-	Emitln("while(1) {");
-		
 	Match(',');	
-		
-	//Emitln("asm_reg0_set( asm_get_var_val(\""+Name+"\")); ");
-	EmitReadVar(Name, 2);
-	PushLast(type);
+
 	var exp_type_check = ExpressionNew();
 	if (exp_type_check!=2)
 		Error_parse("Real type expected.");
 	
-	PopReg1(type);
-	Emitln("asm_le();");
-	
-	Emitln("if ( !asm_reg0_real )\n\tbreak;" );
 
 	if (exp_type_check!=1 && exp_type_check!=2)
 	{
@@ -2529,32 +3082,25 @@ function DoLoop(is_zero_begin)
 	scope.for_while_track.push(1);
 	
 	Match(')');
+	IncIndent();
 	Statement();
+	DecIndent();
 	
 	scope.for_while_track.pop();
 	
-	//Emitln("asm_reg0_set( asm_get_var_val(\""+Name+"\")); ");
-	EmitReadVar(Name, 2);
-	PushLast(type);
-	Emitln("asm_reg0_real = 1;");
-	PopReg1(type);
-	Emitln("asm_add_real();");
-	EmitWriteVar(Name, 2);
-	//Emitln("asm_set_var( \""+Name+"\", asm_reg0, 2 );");
-	
-	Emitln("}\n");
 	Emitln_ast("}\n");
 }
 
-function DoImport(module_code)
+function DoImport(module_code, name)
 {	
-	var old_inp = inp;
-	var old_inp_pos = inp_pos;
-	var old_look = Look;
+	var old_state = SaveCompileState();
 	
 	inp = module_code;
 	inp_pos = 0;
 	end_of_prog = false; 
+	//report_pos = name;
+	var old_module_name = current_module_name;
+	current_module_name = name;
 	
 	GetChar();
 	SkipWhite();
@@ -2565,18 +3111,20 @@ function DoImport(module_code)
 		{
 			DoFunction();
 		}
+		else if (CheckAhead("class"))
+		{
+			DoFunction(true);
+		}
 		else
 		{
 			Statement();
 		}
 	}
 	
-	end_of_prog = false; 
-	
-	Look = old_look;
-	inp = old_inp;
-	inp_pos = old_inp_pos;
-	
+	RestoreCompileState(old_state);
+	current_module_name = old_module_name;
+		
+	comp_define_var_const(name, '"' + module_code + '"', 9); 
 }
 
 function DoPragma()
@@ -2598,199 +3146,18 @@ function DoPragma()
 	
 }
 
-function EmitReadVar(name, type)
+
+function IsNewDefinition(Name)
 {
-	var is_global = cur_scope == undefined || cur_scope.get_var_type(name) == undefined;
-	
-	if (type == 7)
-	{
-		Error_parse("void values can not be assigned.");
-	}
-	else if (type < 1 || type > 6)
-	{
-		Error_parse("Internal error. Type error 1.");
-	}
-	
-	if ( const_vars[name] != undefined )
-	{
-		if(type == 1 || type == 2)
-			Emitln("asm_reg0_real = " + const_vars[name] + ";" );
-		else
-			Emitln("asm_reg0 = " + const_vars[name] + ";" );
-	}
-	else if(is_global)
-	{
-		if(type == 1 || type == 2)
-			Emitln("asm_reg0_real = asm_heap[" + global_scope.vars_rel_pos[name] + "]; // " + name);
-		else
-			Emitln("asm_reg0 = asm_heap[" + global_scope.vars_rel_pos[name] + "]; // " + name);
-	}
-	else
-	{
-		if(type == 1 || type == 2)
-			Emitln("asm_reg0_stack_read_real(" + cur_scope.vars_rel_pos[name] + "); //" + name);
-		else
-			Emitln("asm_reg0_stack_read(" + cur_scope.vars_rel_pos[name] + "); //" + name);
-	}
+	var is_def_new = (cur_scope !== undefined) || (cur_scope === undefined && comp_try_get_var_type(Name) == undefined);
+	if( cur_scope && (cur_scope.global_promoted[Name] || cur_scope.vars_rel_pos[Name] < 0))
+		is_def_new = false;
+	return is_def_new;
 }
 
-function EmitWriteVar(name, type)
-{
-	var is_global = cur_scope == undefined || cur_scope.get_var_type(name) == undefined;
-	
-	if (type == 7)
-	{
-		Error_parse("void values can not be set.");
-	}
-	else if (type<1 || type > 6)
-	{
-		Error_parse("Internal error. Type error 1.");
-	}
-	
-	if ( const_vars[name] != undefined )
-	{
-		//Emitln("asm_reg0_set(" + const_vars[name] + ");" );
-		Error_parse("Can not change const value.")
-	}
-	else if (is_global)
-	{
-		if(type == 1 || type == 2)
-			Emitln("asm_heap[" + global_scope.vars_rel_pos[name] + "] = " + "asm_reg0_real;  //" + name );
-		else
-			Emitln("asm_heap[" + global_scope.vars_rel_pos[name] + "] = " + "asm_reg0;  //" + name );
-	}
-	else
-	{
-		if(type == 1 || type == 2)
-			Emitln("asm_reg0_stack_write_real(" + cur_scope.vars_rel_pos[name] + "); //" + name);
-		else
-			Emitln("asm_reg0_stack_write(" + cur_scope.vars_rel_pos[name] + "); //" + name);
-	}
-}
-
-
-function AssignmentOp(Name, IsIndexed, IndexMultiple)
-{
-	var type;
-	
-	Delegate.return_stack.push([]);
-	
-	if (IsIndexed)
-	{
-		type = comp_get_var_type(Name);
-		if (type == 4)
-		{
-			//in javascript Strings are immutable so it does not work in this simple form.
-			Error_parse("Strings are not supported yet.");
-			/*StringIndexer(Name);
-			Match('=');
-			var type = Expression();
-			
-			Emitln("asm_string_set_elm()");*/
-		}
-		else
-		{
-			//IndexMultiple = MatrixIndexer(Name);
-			Match('=');
-			if (!IndexMultiple)
-			{
-				type = Expression();
-				if (type != 2)
-					Error_parse("Matrix elements should be real");
-				Emitln("asm_matrix_set_elm();");
-								
-				ast_postfix_push(Name, 3, 0);
-				ast_postfix_push('[]=', type, 4);
-			}
-			else
-			{
-				type = Expression();
-				if (type != 3)
-					Error_parse("Matrix expected");
-					
-				ast_postfix_push(Name, 3, 0);
-				
-				
-				switch(IndexMultiple)
-				{
-					case 102:
-						Emitln("asm_matrix_set_slice();");
-						var ast = ast_postfix_push("[:]=", type, 6, "asm_matrix_set_slice()");
-						ast.opts.mode = "cortex.setslice";
-						break;
-					case 100:
-						Emitln("asm_matrix_set_slice(1); // col ");
-						var ast = ast_postfix_push("[:]=", type, 5, "asm_matrix_set_slice()");
-						ast.opts.mode = "cortex.setcol";
-						break;
-					case 101:
-						Emitln("asm_matrix_set_slice(2); // row");
-						var ast = ast_postfix_push("[:]=", type, 5, "asm_matrix_set_slice()");
-						ast.opts.mode = "cortex.setrow";
-						break;
-				}
-			}
-		}
-	}
-	else
-	{
-		rvalue_pos++;
-		rvalue[rvalue_pos] = false;
-		
-		Match('=');
-		type = Expression();
-				
-		ast_postfix_push(Name, type, 0);
-		var ast_eq = ast_postfix_push('=', type, 2);
-		ast_eq.opts.define = (comp_try_get_var_type(Name) == undefined);
-		
-		if (rvalue[rvalue_pos]==false)
-		{
-			if (type==3)
-			{
-				Emitln("asm_reg0_dub_matrix();");
-				ast_eq.opts.dubmat = true;
-			}
-			else if (type==4)
-			{
-				//javascript does not need copy for string but other virtual machines may need
-				//Emitln("asm_reg0_dub_s();");
-			}
-		}
-		
-		
-		comp_define_var(Name, type == 5 ? 6 : type);
-		
-		if(type == 5 || type == 6)
-		{
-			Delegate.Assign( type, Delegate.LastReturnStack() , Name);
-			type = 6;
-		}
-		
-		
-		rvalue_pos--;
-		
-		EmitWriteVar(Name, type);
-		
-		
-		
-			
-		//Emitln("real_stack[real_asm_sp - " + cur_scope.vars_rel_pos[Name] + "] = " + "asm_reg0_get_val();" );	
-		//Emitln("real_asm_sp++");
-		//Emitln("asm_set_var( \"" + Name + "\", asm_reg0_get_val(), " + type + " );");	
-	}
-	
-	Delegate.return_stack.pop();
-	
-	return type;
-}
 
 function ClearUnusedParams(return_types, start, end)
 {
-	for (var i=start;i < end;i++)
-	{
-		PopReg0(return_types[i]);
-	}
 }
 
 function PeekCmdFuncName()
@@ -2815,20 +3182,50 @@ function PeekCmdFuncName()
 // Command style function call. ( clear all, plot x y)
 // no return value. all parameters are string
 function CommandFuncCall(Name)
-{
-	Delegate.return_stack.push([]);
+{	
+	ast_postfix_push(Name, 5, 0);
+	if(Name == 'typeof')
+		Error_parse("'typeof' can not be called in command style, use typeof(..)");
 	var return_types = FuncCall(Name, true);
-	
-	Delegate.return_stack.pop();
 	
 	ClearUnusedParams(return_types, 1, return_types.length);
 }
 
+function DoVar()
+{
+	GetName();
+	if(cur_scope === undefined)
+		Error_parse("Can only use 'var' in function scopes.");
+	
+	while(true)
+	{
+		var saved_inp_pos = inp_pos;
+		var saved_look = Look;
+		
+		var var_name = GetName();
+
+		if(cur_scope.get_local_var_type(var_name) !== undefined)
+			Error_parse("Local variable already defined. '" + var_name + "'");
+		cur_scope.local_enforced[var_name] = true;
+		if(Look == '=')
+		{
+			inp_pos = saved_inp_pos;
+			Look = saved_look;
+			ExpressionNew();
+			Emitln_ast( ast_generate_code() + ";");
+		}
+		
+		if(Look != ',')
+			break;
+		Match(',');
+	}
+	
+	Match(';');
+}
+
 // [ s v d] = svd(A)
 function MultiAssignment()
-{
-	Delegate.return_stack.push([]);
-	
+{	
 	Match('[');
 	var Names = new Array(10);
 	var num_names=0;
@@ -2845,60 +3242,58 @@ function MultiAssignment()
 	Match(']');
 	
 	Match('=');
-	
-	var Name = GetName();
-	
+
 	rvalue_pos++;
 	rvalue[rvalue_pos] = false;
-
-	var return_types = FuncCall(Name);	
 	
+	var return_types = IndexMemberFunc(true);
 	
+	var return_delegates = ast_postfix[ast_postfix.length-1].opts.return_delegates;
+	
+	if(return_types.length <= 1)
+		Error_parse("Function does not have multiple return values.");
 	if (num_names > return_types.length)
-		Error_parse("Function '" +Name + "' does not have enough return values.");
+		Error_parse("Function does not have enough return values.");
 	
 	ClearUnusedParams(return_types, num_names, return_types.length);
 	
 	var type = return_types[num_names - 1];
+	
+	comp_define_var(Names[num_names - 1], type);
+	if (type==3 && rvalue[rvalue_pos] == false)
+	{
+		ast.opts.dubmat = true;
+	}
+	
+	rvalue_pos--;
+	
+	for (var i=num_names - 2;i >=0 ;i--)
+	{
+		comp_define_var(Names[i], return_types[i]);
+		
+		if (return_types[i]==3 /*&& assignment_copy_needed*/)
+		{
+			//Emitln("asm_reg0_dub_matrix();");
+		}
+	}
 	
 	var ast = ast_postfix_push("[,,]", -1, 1);
 	ast.opts.names = new Array(num_names);
 	ast.opts.define = new Array(num_names);
 	for (var i=0;i < num_names ;i++)
 	{
-		ast.opts.define[i] = comp_try_get_var_type(Names[i]) == undefined;
-		ast.opts.names[i] = Names[i];
-	}
-	
-	comp_define_var(Names[num_names - 1], type);
-	if (type==3 && rvalue[rvalue_pos] == false)
-	{
-		Emitln("asm_reg0_dub_matrix();");
-		ast.opts.dubmat = true;
-	}
-	
-	rvalue_pos--;
-	
-	EmitWriteVar(Names[num_names - 1], type);
-
-	for (var i=num_names - 2;i >=0 ;i--)
-	{
-		PopReg0(return_types[i]);
-	
-		comp_define_var(Names[i], return_types[i]);
-		
-		if (return_types[i]==3 /*&& assignment_copy_needed*/)
+		ast.opts.define[i] = IsNewDefinition(Names[i]);
+		if( !comp_is_member(Names[i]))
+			ast.opts.names[i] = Names[i];
+		else
 		{
-			Emitln("asm_reg0_dub_matrix();");
+			ast.opts.names[i] = "_this[" + cur_scope.vars_rel_pos[Names[i]] + "]";
+			ast.opts.define[i] = false;
 		}
 		
-		EmitWriteVar(Names[i], type);
-		//Emitln("asm_set_var( \"" + Names[i] + "\", asm_reg0, " + return_types[i] + " );");
+		if(return_delegates.delegates_multi && return_delegates.delegates_multi[i]) 
+			Delegate.Assign(return_types[i], return_delegates.delegates_multi[i], Delegate.GetMapName(ast.opts.names[i]));
 	}
-	
-	
-	
-	Delegate.return_stack.pop();
 	
 	return type;
 }
@@ -2927,7 +3322,7 @@ function Statement()
 	{
 		var type = MultiAssignment();
 		Emitln_ast( ast_generate_code(true) + ";");
-		return type;
+		return all_paths_return;
 	}
 	else if (Look == '{')
 	{
@@ -2965,23 +3360,46 @@ function Statement()
 		var scope = get_scope();
 		if(scope.for_while_track.length == 0)
 			Error_parse("illegal break.");
-			
-		Emitln("break;");
+
+		Emitln_ast("break;");
 	}
-	/*else if (CheckAhead("continue"))
+	else if (CheckAhead("continue"))
 	{
 		GetName();
 		var scope = get_scope();
 		if(scope.for_while_track.length == 0)
 			Error_parse("continue should be in for or while.");
 		
-		Emitln("continue;");
-	}*/
+		Emitln_ast("continue;");
+	}
+	else if (CheckAhead("global"))
+	{
+		GetName();
+		if(cur_scope === undefined)
+			Error_parse("Can only use 'global' in function scopes.");
+		var var_list = GetNameList( ',' , ';' , false );
+		for(var i=0; i< var_list.length; i++)
+		{
+			if(cur_scope.get_var_type(var_list[i]) !== undefined)
+				Error_parse("Global variable already defined. '" + var_list[i] + "'");
+			cur_scope.global_promoted[var_list[i]] = true;
+			if(global_scope.get_var_type(var_list[i]) === undefined)
+				global_scope.define_var(var_list[i], 99999);
+		}
+	}
+	else if (CheckAhead("var"))
+	{
+		DoVar();
+	}
 	else if (CheckAhead("if"))
 	{
 		GetName();
 		if( DoIf() )
 			all_paths_return = true;
+	}
+	else if (CheckAhead("function") || CheckAhead("real") || CheckAhead("matrix") || CheckAhead("string") || CheckAhead("bool"))
+	{
+		DoFunction();
 	}
 	else if (CheckAhead("return"))
 	{
@@ -3067,102 +3485,75 @@ function Preload()
 	}
 }
 
-var modules = {};
 
-function ImportAsyncLoad(code_inp)
+function ParseImport()
 {
-	end_of_prog = false;
-	inp = code_inp;
-	inp_pos = 0;
-	GetChar();
-	SkipWhite();
+	GetName();	
 	
-	var files = [];
-	
-	while (CheckAhead("import"))
-	{
-		GetName();
-		Match('"');
-		var src = GetString();
-		Match('"');
-		
-		files.push(src);
-	}
-	
-	for(var i = 0; i < files.length; i++)
-		files[i].loaded = false;
-	
-	var count = 0;
-	var data_loaded = {};
-	for(var i = 0; i < files.length; i++)
-	{
-		var file_url = "compiler/lib/" + files[i] + ".crx";
-		var request = $.get(file_url, '', 'text');
-		
-		request.done(function(data){
-			count++;
-			data_loaded[this.url] = data;
-			if(count == files.length)
-			{
-				for(var i = 0; i < files.length; i++)
-				{
-					cortexParser.print(" --- " + files[i] + ' --- \r\n' + data_loaded[file_url] + '\r\n');
-					ImportAsyncLoad(data_loaded[file_url]);
-				}
-					
-				/*cortexParser.compile_aux(code_inp);*/
-				cortexParser.print("import load done");
-			}
-		});
-		
-		request.fail(function(data){
-			alert(data);
-		});
-	/*
-		var count = 0;
-		$.get(files[i], '', 'text')
-		.done(function(data){
-			
-			alert(i);
-			count++;
-			if(count == files.length)
-			{
-				/*for(var i = 0; i < files.length; i++)
-					ImportAsyncLoad(data);* /
-			}
-		})
-		.fail(function(data){
-			alert(data);
-		});*/
-		
-	}
-	
-	//cortexParser.compile_aux(code_inp);
-}
+	var lib_src, lib_alias;
 
-function Import()
-{
-	DoImport(module_cortex_static);
-	
-	while(CheckAhead("import"))
+	if(Look == '"')
 	{
-		GetName();
 		Match('"');
-		GetString();
+		lib_src = GetString(); // escape name ??
 		Match('"');
 	}
+	else 
+	{	
+		lib_src = GetName();
+	}
+	
+	var lib_alias = undefined;
+	
+	if(CheckAhead("as"))
+		lib_alias = GetName();
+
+	var test_module1 = " function f1(x ) =>  x+1; function f2(x) => x-1; g1 = 1";
+	var test_module2 = " function f1(x ) =>  x+2; function f2(x) => x-2; g1 = 2";
+	var test_module3 = " class C1(){ a = 3; b = 4; function m1(x) => x + a;}";
+	
+	var lib_code = "";
+	if(lib_src == "lib1")
+		lib_code = test_module1;
+	else if(lib_src == "lib2")
+		lib_code = test_module2;
+	else if(lib_src == "lib3")
+		lib_code = test_module3;
+	else
+		Error_parse("Module not found : '" + lib_src + "'");
+	
+	var pre_module = cur_module;
+	cur_module = { name : lib_src, alias : lib_alias } ;
+	//module_stack.push(cur_module);
+	//...
+	DoImport( lib_code, lib_src );
+	
+	cur_module = pre_module;
+	
 }
 
 function Program()
 {
-	Import();
+	DoImport(module_cortex_static, "");
 	Preload();
 	
 	while(!end_of_prog)
 	{
-		if (CheckAhead("function") || CheckAhead("real") || CheckAhead("matrix") || CheckAhead("string") || CheckAhead("bool"))
+		/*if (CheckAhead("function") || CheckAhead("real") || CheckAhead("matrix") || CheckAhead("string") || CheckAhead("bool"))
 		{
 			DoFunction();
+		}
+		else */if (CheckAhead("class"))
+		{
+			DoFunction(true);
+		}
+		else if(CheckAhead("import"))
+		{
+			ParseImport();
+		}
+		else if(CheckAhead("module"))
+		{
+			DoModule();
 		}
 		else if (CheckAhead("clear"))
 		{
@@ -3172,15 +3563,12 @@ function Program()
 			{
 				comp_clear_all();
 				Emitln_ast("cortex.heap = new Array(1000);");
-				Emitln("cortex.heap = new Array(1000);")
 			}
 			else
 			{
 
 				comp_clear_var(var_name);
 			}
-			
-			
 		}
 		else
 		{
@@ -3189,12 +3577,8 @@ function Program()
 	}
 	
 	if (__ans_pos >= 0)
-		compiled_js_test = compiled_js_test.slice(0, __ans_pos) + "cortex.__ans = " + compiled_js_test.slice(__ans_pos);
-	
-	if (comp_type_is_real(last_expression_type))
-		compiled_asm += "\ncortex.__ans = asm_reg0_real;"
-	else
-		compiled_asm += "\ncortex.__ans = asm_reg0;"
+		compiled_js = compiled_js.slice(0, __ans_pos) + "cortex.__ans = " + compiled_js.slice(__ans_pos);
+
 	
 	LinkDelegateFunctions();
 }
@@ -3214,7 +3598,7 @@ function ftable_function(ast)
 		var i = 0;
 		for (var n in Delegate.ftable_funcs[type])
 		{
-			s += "  case " + Delegate.ftable_funcs[type][n] + " : " + (ast ? "return " : "") + "asm_func_" + func_gen_names[n + type_suffix] + (ast ? "" : "()") + "; break;\n";
+			s += "  case " + Delegate.ftable_funcs[type][n] + " : " + (ast ? "return " : "") + "_" + func_gen_names[n + type_suffix] + (ast ? "" : "()") + "; break;\n";
 			i++;
 		}
 		
@@ -3250,10 +3634,10 @@ new FunctionDefs("det", [ 3 ], [2 ], "	asm_reg0_real = numeric.det(param0);" , f
 new FunctionDefs("inv", [ 3 ], [3 ], "	try { asm_reg0 = numeric.inv(param0);} catch(err){ cortex.error_run('Non invertible matrix'); }" , false),
 new FunctionDefs("trans", [ 3 ], [3 ], "	asm_reg0 = numeric.transpose(param0);" , false),
 new FunctionDefs("diag", [ 3 ], [3 ], "	asm_reg0 = numeric.diag(param0[0]);" , false),
-new FunctionDefs("ones", [ 2 ], [3 ], "	asm_reg0 = numeric.rep([param0,param0],1);" , false),
-new FunctionDefs("ones", [ 2,2 ], [3 ], "	asm_reg0 = numeric.rep([param0,param1],1);" , false),
-new FunctionDefs("zeros", [ 2 ], [3 ], "	asm_reg0 = numeric.rep([param0,param0],0);" , false),
-new FunctionDefs("zeros", [ 2,2 ], [3 ], "	asm_reg0 = numeric.rep([param0,param1],0);" , false),
+new FunctionDefs("ones", [ 2 ], [3 ], "	asm_reg0 = cortex.rep([param0,param0],1);" , false),
+new FunctionDefs("ones", [ 2,2 ], [3 ], "	asm_reg0 = cortex.rep([param0,param1],1);" , false),
+new FunctionDefs("zeros", [ 2 ], [3 ], "	asm_reg0 = cortex.rep([param0,param0],0);" , false),
+new FunctionDefs("zeros", [ 2,2 ], [3 ], "	asm_reg0 = cortex.rep([param0,param1],0);" , false),
 new FunctionDefs("rand", [ 2 ], [3 ], "	asm_reg0 = numeric.random([param0,param0]);" , false),
 new FunctionDefs("rand", [ 2,2 ], [3 ], "	asm_reg0 = numeric.random([param0,param1]);" , false),
 new FunctionDefs("randn", [  ], [2 ], "	asm_reg0_real = cortex.randn();" , false),
@@ -3299,6 +3683,22 @@ new FunctionDefs("eig", [3], [ 3,3,3,3 ],
 , false,
 '\	var r = cortex.eig(param0);\n	return r;'
 ),
+new FunctionDefs("fft", [3, 3], [ 3,3], 
+"\	var z = (new numeric.T(param0[0], param1[0])).fft(); \
+\n\	asm_reg0 = [z.x]; \
+\n\	asm_stack[asm_sp++] = asm_reg0;\
+\n\	asm_reg0 = [z.y];"
+, false,
+'\	var z = (new numeric.T(param0[0], param1[0])).fft();return [ [z.x], [z.y]];'
+),
+new FunctionDefs("fft", [3], [ 3,3], 
+"\	var z = (new numeric.T(param0[0])).fft(); \
+\n\	asm_reg0 = [z.x]; \
+\n\	asm_stack[asm_sp++] = asm_reg0;\
+\n\	asm_reg0 = [z.y];"
+, false,
+'\	var z = (new numeric.T(param0[0])).fft();return [ [z.x], [z.y]];'
+),
 new FunctionDefs("close", [ 2 ], [ 2 ], "	asm_reg0_real = closeFigures(param0);\n	" , false),
 new FunctionDefs("close", [ 4 ], [ 2 ], "	asm_reg0_real = closeFigures(param0);\n	" , false),
 
@@ -3312,7 +3712,8 @@ new FunctionDefs("plot", [3,4, 3,4 ], [ 2 ], "	asm_reg0_real = plotArray(param0,
 new FunctionDefs("plot", [3,3,3,3,4], [ 2 ], "	asm_reg0_real = plotArray(param0, param1, undefined, param2, param3, param4);\n	" , false),
 new FunctionDefs("plot", [3,3,4,3,3], [ 2 ], "	asm_reg0_real = plotArray(param0, param1, param2, param3, param4, undefined);\n	" , false),
 new FunctionDefs("plot", [3,3,4,3,3,4], [ 2 ], "	asm_reg0_real = plotArray(param0, param1, param2, param3, param4, param5);\n	" , false),
-
+new FunctionDefs("title", [4], [ 7 ], "	updateTitle( undefined, param0 )\n	" , false),
+new FunctionDefs("title", [2, 4], [ 7 ], "	updateTitle( param0,  param1)\n	" , false),
 new FunctionDefs("imshow", [3 ], [ 2 ], "	asm_reg0_real = showImage(param0);\n	" , false),
 new FunctionDefs("imshow", [3,3,3 ], [ 2 ], "	asm_reg0_real = showImage(param0,param1,param2);\n	" , false),
 new FunctionDefs("imread", [ 4 ], [ 3,3,3 ], 
@@ -3334,16 +3735,18 @@ new FunctionDefs("numrows", [3], [ 2 ],
 "\	asm_reg0_real = param0.length;" , false),
 new FunctionDefs("numel", [3], [ 2 ], 
 "\	asm_reg0_real = param0.length*param0[0].length;" , false),
-new FunctionDefs("size", [3], [ 2,2], 
-"\	asm_reg0_real = param0.length;" , false, 'return [param0.length, param0[0].length];'),
+//new FunctionDefs("size", [3], [ 2,2], 
+//"\	asm_reg0_real = param0.length;" , false, 'return [param0.length, param0[0].length];'),
 new FunctionDefs("tic", [ ], [ 7 ], 
 "\	cortex.ticTime = new Date();asm_reg0 = undefined" , false),
 new FunctionDefs("toc", [ ], [ 2 ], 
 "\	asm_reg0_real = (new Date())- cortex.ticTime;" , false),
 new FunctionDefs("clc", [ ], [7 ], "	document.getElementById('output_win_txt').innerHTML = ''\n	asm_reg0 = undefined;" , false),
-new FunctionDefs("animstop", [ 2 ], [ 7 ], "	clearInterval(openFigures[param0].timerID);\n	cortex.print('Anim is stopped');" , false),
-new FunctionDefs("animdraw", [ 2, 3 ], [ 7 ], "	updateImage(param0, param1);" , false),
-new FunctionDefs("animdraw", [ 2, 3, 3, 3 ], [ 7 ], "	updateImage(param0, param1, param2, param3);" , false),
+new FunctionDefs("animstop", [ 2 ], [ 7 ], "	cortex.stopAnim();" , false),
+new FunctionDefs("animstop", [  ], [ 7 ], "	cortex.stopAnim();" , false),
+new FunctionDefs("animsize", [  2,2 ], [ 7 ], "	cortex.animSize(param0, param1);" , false),
+new FunctionDefs("animdraw", [ 2, 3 ], [ 7 ], "	cortex.updateAnim(param0, param1);" , false),
+new FunctionDefs("animdraw", [ 2, 3, 3, 3 ], [ 7 ], "	cortex.updateAnim(param0, param1, param2, param3);" , false),
 new FunctionDefs("_dotests", [  ], [ 2 ], "	asm_reg0_real = do_tests();" , false),
 new FunctionDefs("_heap", [  ], [ 7 ], "	cortex.print(cortex.heap);" , false),
 new FunctionDefs("_bench", [ 2 ], [ 7 ], "	asm_reag0_real = benchmark1(param0);" , false),
@@ -3371,6 +3774,7 @@ new FunctionDefs("sqrt", [  ], [  ], "	throw 'Internal error'" , false),
 new FunctionDefs("tan", [  ], [  ], "	throw 'Internal error'" , false),
 new FunctionDefs("anim", [  ], [  ], "	throw 'Internal error'" , false),
 new FunctionDefs("print", [  ], [  ], "	throw 'Internal error'" , false),
+new FunctionDefs("typeof", [  ], [  ], "	throw 'Internal error'" , false),
 new FunctionDefs("disp", [  ], [  ], "	throw 'Internal error'" , false)
 );
 
@@ -3380,7 +3784,7 @@ function mean(X) \
     return sum(X) / numel(X);\
 }\
 \
-function var(data) \
+function variance(data) \
 {\
     n = numel(data);\
     sum2 = 0;\
@@ -3395,13 +3799,13 @@ function var(data) \
         }\
     \
     \
-    variance = sum2 / (n - 1);\
-    return variance;\
+    v = sum2 / (n - 1);\
+    return v;\
 }\
 \
 function std(X) \
 {\
-    return sqrt(var(X));\
+    return sqrt(variance(X));\
 }\
 \
 \
@@ -3419,6 +3823,40 @@ function diff(X)\
     \
     return ret;\
 }\
+function max(X)\
+{\
+    n = numrows(X);\
+    m = numcols(X);\
+    ret = X[0,0]; \
+    \
+    loop0(i,n)\
+       loop0(j, m)\
+       {\
+          if(X[i,j]> ret) \
+			ret = X[i,j];\
+       }\
+    \
+    return ret;\
+}\
+function min(X)\
+{\
+    n = numrows(X);\
+    m = numcols(X);\
+    ret = X[0,0]; \
+    \
+    loop0(i,n)\
+       loop0(j, m)\
+       {\
+          if(X[i,j]< ret) \
+			ret = X[i,j];\
+       }\
+    \
+    return ret;\
+}\
+function fmod(x,y) \
+{ \
+    return x - floor(x / y ) * y; \
+} \
 ";
 
 cortexParser.functionList = function_list;
@@ -3513,28 +3951,13 @@ function ErrorInvalidFunctionParam(name, args)
 function StandartFunctions(Name, func_name, params_count, params_type, params_delegate)
 {
 	var return_types;
-	var inline_functions = "";
-	EmitFuncln( 'function asm_func_' + func_name + '()');
-	EmitFuncln( '{');
+	var inline_functions_js = "";
+	var old_indent = cur_indent;
+	cur_indent = 0;
 		
 	var param_str = "";
 	for (var i = params_count-1; i>=0; i--)
 	{
-		EmitFuncln( '	var param' + i + ';');
-		
-		
-		if(params_type[i] == 1 || params_type[i] == 2)
-		{
-			EmitFuncln( '	asm_pop_real();');
-			EmitFuncln( '	param' + i + ' = asm_reg0_real;');
-		}
-		else
-		{
-			EmitFuncln( '	asm_pop();');
-			EmitFuncln( '	param' + i + ' = asm_reg0;');
-		}
-		EmitFuncln('');
-		
 		if ( i==params_count-1)
 			param_str = ' param' + i + param_str;
 		else
@@ -3542,28 +3965,37 @@ function StandartFunctions(Name, func_name, params_count, params_type, params_de
 	}
 	
 	if(Name != 'anim')	
-		EmitFuncln_ast( 'function asm_func_' + func_name + '(' + param_str + ') {');
+		EmitFuncln_ast( 'function _' + func_name + '(' + param_str + ') {');
 	
 	var ismath = Name.lastIndexOf(".") == -1 &&  eval('Math.' + Name);	
 	if(ismath) 
 	{	
+		if( Name == 'random' && params_count != 0 )
+			Error_parse(Name + ' : Invalid parameter count.');
+		if( (Name == 'pow' || Name == 'atan2') && params_count != 2)
+			Error_parse(Name + ' : Invalid parameter count.');		
+		if( !(Name == 'max' || Name == 'min' || Name == 'pow' || Name == 'atan2' || Name == 'random') && params_count != 1 )
+			Error_parse(Name + ' : Invalid parameter count.');
+			
 		if ( params_type[0] == 3)
 		{
-			//assignment_copy_needed = false
-			return_types = [3];
-			EmitFuncln( '	param0 = numeric.clone(param0);');
-			EmitFuncln( '	asm_util_matrix_map(param0, Math.' + Name + ');');
-			EmitFuncln( '	asm_reg0 = param0;');	
-			
-			EmitFuncln_ast( '	param0 = numeric.clone(param0);');
-			EmitFuncln_ast( '	asm_util_matrix_map(param0, Math.' + Name + ');');
-			EmitFuncln_ast( '	return param0;');
-			
+			if(Name == 'max' || Name == 'min')
+			{
+				Error_parse(Name + ' : Operation not supported on matrices.');
+			}
+			else
+			{
+				//assignment_copy_needed = false
+				return_types = [3];
+				
+				EmitFuncln_ast( '	param0 = numeric.clone(param0);');
+				EmitFuncln_ast( '	asm_util_matrix_map(param0, Math.' + Name + ');');
+				EmitFuncln_ast( '	return param0;');
+			}
 		}
 		else 
 		{
 			return_types = [2];
-			EmitFuncln( '	asm_reg0_real = Math.' + Name + '(' + param_str + ');');
 			EmitFuncln_ast( '	return Math.' + Name + '(' + param_str + ');');
 		}
 	}	
@@ -3588,36 +4020,35 @@ function StandartFunctions(Name, func_name, params_count, params_type, params_de
 		{
 			var return_delegates = {};
 			
-			var hold_function_js = functions_asm;
-			functions_asm = "";
-			Delegate.Assign(params_type[0], params_delegate[0], "_anim_tempval" + anim_count);
+			var hold_function_js = functions_js;
+			Delegate.Assign(params_type[0], params_delegate[0], "_anim_tempval" + anim_count); 
 			var return_types_callback = LinkDelegation("_anim_tempval" + anim_count, 1, [2], return_delegates, [[],[],[]]);
+			var suffix = GetFtableFuncName( [2], 1, return_types );
 			anim_count++;
-			inline_functions = functions_asm;
-			functions_asm = hold_function_js;
+			inline_functions_js = functions_js;
+			functions_js = hold_function_js;
 			
-			EmitFuncln_ast( 'function asm_func_' + func_name + '(' + param_str + ') {');
-			
-			EmitFuncln("");
-			
-			var suffix = "2_" + return_types_callback[0];
-			EmitFuncln("	var id = showImage(numeric.rep([100,100],0));\n	openFigures[id].timerID = setInterval( function(){ try { asm_reg0_real = id;asm_push();\n		asm_fjump_table_" + suffix + "(param0);//asm_call_reg0();\n		if (openFigures[id] == undefined || openFigures[id].closed)	{\n			clearInterval(openFigures[id].timerID);		cortex.print('Animation is stopped');update_editor(); } } catch(err) { for(var i = 0 ; i < openFigures.length ; i++)	clearInterval(openFigures[i].timerID); cortex.print_run_error(err.message); }		}, " + interval + ");");			
-			EmitFuncln("	cortex.print('Animation is started');\n	asm_reg0_real = id;");
-			
-			EmitFuncln_ast("	var id = showImage(numeric.rep([100,100],0));\n	openFigures[id].timerID = setInterval( function(){ try { \n		asm_fjump_table_" + suffix + "(param0)(id);\n		if (openFigures[id] == undefined || openFigures[id].closed)	{\n			clearInterval(openFigures[id].timerID);		cortex.print('Animation is stopped');update_editor(); } } catch(err) { for(var i = 0 ; i < openFigures.length ; i++)	clearInterval(openFigures[i].timerID); cortex.print_run_error(err.message); }		}, " + interval + ");");			
-			EmitFuncln_ast("	cortex.print('Animation is started');\n	return id;");
+			EmitFuncln_ast( 'function _' + func_name + '(' + param_str + ') {');
+			EmitFuncln_ast("	cortex.startAnim(asm_fjump_table_" + suffix + "(param0), " + interval + "); ");
 		}
 		else
 		{
 			Error_parse("Function expected for first parameter.")
 		}
 	}
+	else if ( Name =='typeof')
+	{
+		if ( params_count !== 1)
+			Error_parse('typeof : Invalid parameter count.');
+		
+		EmitFuncln_ast("	return " + params_type[0] + ";");
+
+		return_types = [2];
+	}
 	else if ( Name =='disp' || Name == 'print')
 	{
 		if ( params_count > 1)
 			Error_parse('disp : Invalid parameter count.');
-		
-		EmitFuncln(DispBody(params_type[0]));
 		
 		EmitFuncln_ast( DispBody(params_type[0]));
 				
@@ -3634,8 +4065,6 @@ function StandartFunctions(Name, func_name, params_count, params_type, params_de
 		//for(var i=0;i< function_list[ind].retvals.length;i++)
 			//return_types[i] = function_list[ind].retvals[i];
 		return_types = function_list[ind].retvals;
-			
-		EmitFuncln( function_list[ind].body);
 		
 		if( function_list[ind].ast_body)
 			EmitFuncln_ast( function_list[ind].ast_body);
@@ -3651,14 +4080,12 @@ function StandartFunctions(Name, func_name, params_count, params_type, params_de
 		
 	}
 	
-	EmitFuncln( '}');
-	EmitFuncln('');	
-	
 	EmitFuncln_ast( '}');
 	EmitFuncln_ast('');	
 	
-	functions_asm += inline_functions;
-	functions_js_test += inline_functions;
+	cur_indent = old_indent;
+	
+	functions_js += inline_functions_js;
 	
 	return return_types;
 }
@@ -3683,12 +4110,8 @@ function LinkFunc(Name, params_count, params_type, return_delegates, params_dele
 		
 		if (func_desc != undefined)
 		{
-			var report_pos_old = report_pos;
-			report_pos = func_desc.code_pos;
-			
 			var link_result = DoFunctionLink(func_name, func_desc, params_count, params_type, return_delegates, params_delegate);
 			return_types = link_result[0];
-			report_pos = report_pos_old;
 			
 			rvalue[rvalue_pos] = link_result[1];
 		}
@@ -3698,11 +4121,13 @@ function LinkFunc(Name, params_count, params_type, return_delegates, params_dele
 			rvalue[rvalue_pos] = true;
 		}
 		
-		linked_functions[func_name] = {return_types :return_types, delegates : return_delegates.delegates};
+		linked_functions[func_name] = {return_types :return_types, delegates : return_delegates.delegates, delegates_multi : return_delegates.delegates_multi};
 	}
 	else
 	{
 		return_types = linked_functions[func_name].return_types; 
+		return_delegates.delegates = linked_functions[func_name].delegates;
+		return_delegates.delegates_multi = linked_functions[func_name].delegates_multi;
 		
 		if( func_desc == undefined)
 			rvalue[rvalue_pos] = true;
@@ -3743,10 +4168,6 @@ function DispBody(type)
 }
 
 
-
-
-
-
 function comp_define_var_const(varname, value, type)
 {
 	const_vars[varname] = value;
@@ -3754,8 +4175,8 @@ function comp_define_var_const(varname, value, type)
 }
 
 function comp_define_var(varname, type)
-{
-	if (cur_scope && global_scope.get_var_type(varname) === undefined )
+{	
+	if (cur_scope && !cur_scope.global_promoted[ varname ])
 	{
 		cur_scope.define_var(varname, type);	
 	}
@@ -3770,12 +4191,13 @@ function comp_try_get_var_type(varname)
 	var r = undefined;
 	
 	if (cur_scope)
+	{
 		r = cur_scope.get_var_type(varname);
+	}
 		
-	if (r!=undefined)	
+	if (r != undefined)	
 		return r;
 	
-	//r = vars_type[varname];
 	r = global_scope.get_var_type(varname);
 	
 	if (r===undefined)
@@ -3799,11 +4221,20 @@ function comp_get_var_type(varname)
 	return r;
 }
 
+function comp_is_member(varname)
+{
+    // function params has negative index, local variables have 0+
+	return cur_scope && !cur_scope.local_enforced[ varname ] && (
+			(cur_scope.isConstructor && cur_scope.vars_rel_pos[varname] >= 0 && !cur_scope.global_promoted[ varname ] ) || 
+			(cur_scope.members && cur_scope.members[varname] != undefined)
+			);
+}
+
 
 function comp_clear_all()
 {
 	global_scope.clear_all();
-	
+	ObjectList = new Array();
 	const_vars=[];
 	const_vars_type=[];
 	
@@ -3874,11 +4305,11 @@ function Init(code_exe)
 	inp_pos = 0;
 	end_of_prog = false;	
 	
-	compiled_asm = "";
-	functions_asm = "";
+	compiled_js = /*'"use strict"\n' +*/ import_global_scope();
+	functions_js = "";
 	
-	compiled_js_test = import_global_scope();
-	functions_js_test = "";
+	compiled_c = "";
+	functions_c = "";
 	
 	ast_postfix = new Array();
     ast_root = new Array();
@@ -3888,26 +4319,33 @@ function Init(code_exe)
 	global_scope.vars_deduced = [];
 	Delegate.ftable_funcs = [];
 	Delegate.map = [];
-	Delegate.return_stack = [];
+	//Delegate.return_stack = [];
 	Delegate.to_be_linked = [];
 	
 	rvalue_pos = 0;
 	user_func_codes = new Array();
 	report_pos = 0;
+	cortexParser.current_function_name = "";
 	function_list.length = function_list_lib_size;
 	
 	func_uid = 0;
+	anonymous_uid = 0;
 	func_gen_names = [];
 	
 	cur_scope = undefined;
 	scope_stack = new Array();
+	
+	cur_module = { name : "", alias : "" };
+	//module_stack = new Array();
+	cortexParser.current_module_name_link = "";
+	current_module_name = "";
 		
 	PreloadList.image_src = [];   // array of strings(image names)
 	PreloadList.image_alias = []; // array of strings(image aliases)
 	PreloadList.import_src = [];
 	PreloadList.import_alias = []; 	
 	
-	modules = {};
+	cur_indent = 0;
 	
 	define_language_consts();
 	
@@ -3915,7 +4353,36 @@ function Init(code_exe)
 	SkipWhite();
 }
 
+function dumpMap(map)
+{
+	var str = "";
+	for (var val in map)
+	{	
+		if (!map.hasOwnProperty(val))
+		    continue;
+		str += "<b>" + val + "</b>" + ": ";
+		if( typeof map[val] === "object")
+			str += "<pre style='margin-left:20px'>" + dumpMap(map[val]) + "</pre>";
+		else
+			str += JSON.stringify(map[val], null, 4) + "\n";
+		str += "\n";
+	}
+	
+	return str;
+}
 
+cortexParser.dumpInternals = function()
+{
+	var json = "";//\n\n";// + Delegate.Dump() + "\n\n{\n";
+	
+	json += "<h3>global_scope:</h3>\n"  + dumpMap(global_scope);
+	json += "<h3>Object Definitions:</h3>\n"  + dumpMap(ObjectList);
+	json += "<h3>Delegate.map:</h3>\n"  + dumpMap(Delegate.map);
+	json += "<h3>user_func_codes:</h3>\n"  + dumpMap(user_func_codes);
+	json += "<h3>linked_functions:</h3>\n"  + dumpMap(linked_functions);
+	//json += "<h3>function_list:</h3>\n"  + dumpMap(function_list);
+	return json + "\n}";
+}
 
 
 }( window.cortexParser = window.cortexParser || {} ));
